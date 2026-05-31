@@ -1,0 +1,6 @@
+{
+  "name": "Le Poutine House",
+  "description": "Le Poutine House is a premium Canadian restaurant serving delicious, artisanal poutines for the whole family, represented by the legendary potato family characters.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

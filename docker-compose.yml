@@ -1,0 +1,60 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: le_poutine_house_mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: le_poutine_house
+      MYSQL_USER: poutine_user
+      MYSQL_PASSWORD: poutine123
+      MYSQL_ROOT_PASSWORD: root
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  backend:
+    build:
+      context: ./backend
+    container_name: le_poutine_house_backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env.example
+    environment:
+      DB_HOST: mysql
+      DB_USER: poutine_user
+      DB_PASSWORD: poutine123
+      DB_NAME: le_poutine_house
+      DB_PORT: 3306
+      PORT: 3000
+    ports:
+      - "3000:3000"
+    volumes:
+      - backend_uploads:/app/uploads
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  phpmyadmin:
+    image: phpmyadmin:latest
+    container_name: le_poutine_house_phpmyadmin
+    restart: unless-stopped
+    environment:
+      PMA_HOST: mysql
+      PMA_PORT: 3306
+      MYSQL_ROOT_PASSWORD: root
+    ports:
+      - "8081:80"
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+volumes:
+  mysql_data:
+  backend_uploads:
