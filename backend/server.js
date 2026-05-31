@@ -2,6 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const mysql = require("mysql2/promise");
 const bcrypt = require("bcryptjs");
+const crypto = require("crypto");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
@@ -55,6 +56,7 @@ const dbConfig = {
 };
 
 const port = Number(process.env.PORT || 3000);
+const jwtSecret = process.env.JWT_SECRET || "le-poutine-house-dev-secret";
 let pool;
 
 const sampleProducts = [
@@ -163,6 +165,92 @@ async function ensureColumn(tableName, columnName, definition) {
   }
 }
 
+function base64UrlEncode(input) {
+  return Buffer.from(input)
+    .toString("base64")
+    .replace(/=/g, "")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_");
+}
+
+function base64UrlDecode(input) {
+  const normalized = input.replace(/-/g, "+").replace(/_/g, "/");
+  const padding = "=".repeat((4 - (normalized.length % 4)) % 4);
+  return Buffer.from(normalized + padding, "base64").toString("utf8");
+}
+
+function signToken(user) {
+  const header = base64UrlEncode(JSON.stringify({ alg: "HS256", typ: "JWT" }));
+  const payload = base64UrlEncode(JSON.stringify({
+    sub: user.id,
+    name: user.name,
+    email: user.email,
+    role: user.role || "customer",
+    exp: Math.floor(Date.now() / 1000) + (7 * 24 * 60 * 60)
+  }));
+  const signature = crypto
+    .createHmac("sha256", jwtSecret)
+    .update(`${header}.${payload}`)
+    .digest("base64")
+    .replace(/=/g, "")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_");
+  return `${header}.${payload}.${signature}`;
+}
+
+function verifyToken(token) {
+  const [header, payload, signature] = String(token || "").split(".");
+  if (!header || !payload || !signature) return null;
+
+  const expected = crypto
+    .createHmac("sha256", jwtSecret)
+    .update(`${header}.${payload}`)
+    .digest("base64")
+    .replace(/=/g, "")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_");
+
+  if (signature !== expected) return null;
+
+  try {
+    const data = JSON.parse(base64UrlDecode(payload));
+    if (data.exp && data.exp < Math.floor(Date.now() / 1000)) return null;
+    return data;
+  } catch (error) {
+    return null;
+  }
+}
+
+function requireAuth(req, res, next) {
+  const authHeader = req.headers.authorization || "";
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+  const decoded = verifyToken(token);
+
+  if (!decoded) {
+    return res.status(401).json({ error: "Valid token is required" });
+  }
+
+  req.user = decoded;
+  next();
+}
+
+function requireAdmin(req, res, next) {
+  if (req.user?.role !== "admin") {
+    return res.status(403).json({ error: "Admin access is required" });
+  }
+  next();
+}
+
+function attachOptionalUser(req) {
+  const authHeader = req.headers.authorization || "";
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+  req.user = verifyToken(token);
+}
+
+function absoluteUploadUrl(req, filename) {
+  return `${req.protocol}://${req.get("host")}/uploads/${filename}`;
+}
+
 async function initializeDatabase() {
   pool = mysql.createPool(dbConfig);
 
@@ -208,13 +296,17 @@ async function initializeDatabase() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS orders (
       id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NULL,
       customer_name VARCHAR(255) NOT NULL,
       customer_phone VARCHAR(50) NOT NULL,
       total DECIMAL(10, 2) NOT NULL,
       status VARCHAR(50) NOT NULL DEFAULT 'pending',
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
     )
   `);
+
+  await ensureColumn("orders", "user_id", "INT NULL");
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS order_items (
@@ -231,6 +323,21 @@ async function initializeDatabase() {
 
   await pool.query("ALTER TABLE order_items MODIFY product_id INT NULL");
   await ensureColumn("order_items", "product_name", "VARCHAR(255)");
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS cart_items (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      item_key VARCHAR(120) NOT NULL,
+      product_name VARCHAR(255) NOT NULL,
+      category VARCHAR(120),
+      quantity INT NOT NULL,
+      price DECIMAL(10, 2) NOT NULL,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY unique_user_item (user_id, item_key),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS app_settings (
@@ -278,6 +385,15 @@ async function initializeDatabase() {
       )
     )
   );
+
+  const [[adminUser]] = await pool.query("SELECT id FROM users WHERE email = ?", ["admin@poutine.local"]);
+  if (!adminUser) {
+    const adminHash = await bcrypt.hash("12345", 10);
+    await pool.query(
+      "INSERT INTO users (name, email, password_hash, role, active) VALUES (?, ?, ?, ?, ?)",
+      ["Admin", "admin@poutine.local", adminHash, "admin", 1]
+    );
+  }
 }
 
 app.get("/", (req, res) => {
@@ -297,7 +413,7 @@ app.post("/uploads", (req, res) => {
     res.status(201).json({
       filename: req.file.filename,
       path: `/uploads/${req.file.filename}`,
-      url: `/uploads/${req.file.filename}`,
+      url: absoluteUploadUrl(req, req.file.filename),
       mimetype: req.file.mimetype,
       size: req.file.size
     });
@@ -317,7 +433,7 @@ app.get("/settings/home", async (req, res) => {
   }
 });
 
-app.put("/settings/home", async (req, res) => {
+app.put("/settings/home", requireAuth, requireAdmin, async (req, res) => {
   const allowedKeys = Object.keys(defaultAppSettings);
   const entries = Object.entries(req.body || {}).filter(([key]) => allowedKeys.includes(key));
 
@@ -377,6 +493,7 @@ app.post("/auth/register", async (req, res) => {
 
     res.status(201).json({
       message: "User registered successfully",
+      token: signToken({ id: result.insertId, name, email, role: userRole }),
       user: {
         id: result.insertId,
         name,
@@ -415,6 +532,7 @@ app.post("/auth/login", async (req, res) => {
 
     res.json({
       message: "Login successful",
+      token: signToken(user),
       user: {
         id: user.id,
         name: user.name,
@@ -436,7 +554,7 @@ app.get("/products", async (req, res) => {
   }
 });
 
-app.put("/products/:id", async (req, res) => {
+app.put("/products/:id", requireAuth, requireAdmin, async (req, res) => {
   const { id } = req.params;
   const { name, category, description, price, image_url } = req.body;
 
@@ -465,7 +583,7 @@ app.put("/products/:id", async (req, res) => {
   }
 });
 
-app.delete("/products/:id", async (req, res) => {
+app.delete("/products/:id", requireAuth, requireAdmin, async (req, res) => {
   const { id } = req.params;
 
   try {
@@ -492,7 +610,7 @@ app.get("/home-sections", async (req, res) => {
   }
 });
 
-app.post("/home-sections", async (req, res) => {
+app.post("/home-sections", requireAuth, requireAdmin, async (req, res) => {
   const { title, description, section_type, image_name, active = true, sort_order = 0 } = req.body;
 
   if (!title || !description) {
@@ -512,7 +630,7 @@ app.post("/home-sections", async (req, res) => {
   }
 });
 
-app.put("/home-sections/:id", async (req, res) => {
+app.put("/home-sections/:id", requireAuth, requireAdmin, async (req, res) => {
   const { id } = req.params;
   const { title, description, section_type, image_name, active = true, sort_order = 0 } = req.body;
 
@@ -541,7 +659,7 @@ app.put("/home-sections/:id", async (req, res) => {
   }
 });
 
-app.delete("/home-sections/:id", async (req, res) => {
+app.delete("/home-sections/:id", requireAuth, requireAdmin, async (req, res) => {
   const { id } = req.params;
 
   try {
@@ -557,7 +675,7 @@ app.delete("/home-sections/:id", async (req, res) => {
   }
 });
 
-app.post("/products", async (req, res) => {
+app.post("/products", requireAuth, requireAdmin, async (req, res) => {
   const { name, category, description, price, image_url } = req.body;
 
   if (!name || !category || price === undefined) {
@@ -605,7 +723,7 @@ app.get("/orders", async (req, res) => {
   }
 });
 
-app.get("/orders/:id", async (req, res) => {
+app.get("/orders/:id(\\d+)", async (req, res) => {
   const { id } = req.params;
 
   try {
@@ -638,7 +756,45 @@ app.get("/orders/:id", async (req, res) => {
   }
 });
 
-app.put("/orders/:id/status", async (req, res) => {
+app.get("/orders/mine", requireAuth, async (req, res) => {
+  try {
+    const [orders] = await pool.query(
+      "SELECT * FROM orders WHERE user_id = ? ORDER BY created_at DESC",
+      [req.user.sub]
+    );
+    const orderIds = orders.map((order) => order.id);
+    if (orderIds.length === 0) return res.json([]);
+
+    const [items] = await pool.query(
+      `
+        SELECT
+          oi.id,
+          oi.order_id,
+          oi.product_id,
+          COALESCE(oi.product_name, p.name, 'Menu item') AS product_name,
+          oi.quantity,
+          oi.price
+        FROM order_items oi
+        LEFT JOIN products p ON p.id = oi.product_id
+        WHERE oi.order_id IN (?)
+        ORDER BY oi.id ASC
+      `,
+      [orderIds]
+    );
+
+    const itemsByOrder = items.reduce((acc, item) => {
+      acc[item.order_id] = acc[item.order_id] || [];
+      acc[item.order_id].push(item);
+      return acc;
+    }, {});
+
+    res.json(orders.map((order) => ({ ...order, items: itemsByOrder[order.id] || [] })));
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch customer orders" });
+  }
+});
+
+app.put("/orders/:id/status", requireAuth, requireAdmin, async (req, res) => {
   const { id } = req.params;
   const { status } = req.body;
 
@@ -660,7 +816,7 @@ app.put("/orders/:id/status", async (req, res) => {
   }
 });
 
-app.get("/admin/users", async (req, res) => {
+app.get("/admin/users", requireAuth, requireAdmin, async (req, res) => {
   try {
     const [users] = await pool.query(
       "SELECT id, name, email, role, active, created_at FROM users ORDER BY created_at DESC"
@@ -671,7 +827,7 @@ app.get("/admin/users", async (req, res) => {
   }
 });
 
-app.put("/admin/users/:id", async (req, res) => {
+app.put("/admin/users/:id", requireAuth, requireAdmin, async (req, res) => {
   const { id } = req.params;
   const { role, active } = req.body;
   const safeRole = role === "admin" ? "admin" : "customer";
@@ -697,7 +853,7 @@ app.put("/admin/users/:id", async (req, res) => {
   }
 });
 
-app.get("/admin/stats", async (req, res) => {
+app.get("/admin/stats", requireAuth, requireAdmin, async (req, res) => {
   try {
     const [[userStats]] = await pool.query(`
       SELECT
@@ -731,7 +887,100 @@ app.get("/admin/stats", async (req, res) => {
   }
 });
 
+app.get("/admin/metrics", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const [dailySales] = await pool.query(`
+      SELECT DATE(created_at) AS label, COALESCE(SUM(total), 0) AS value
+      FROM orders
+      WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)
+      GROUP BY DATE(created_at)
+      ORDER BY DATE(created_at)
+    `);
+
+    const [topProducts] = await pool.query(`
+      SELECT COALESCE(product_name, 'Menu item') AS label, SUM(quantity) AS value
+      FROM order_items
+      GROUP BY COALESCE(product_name, 'Menu item')
+      ORDER BY value DESC
+      LIMIT 5
+    `);
+
+    const [orderStatus] = await pool.query(`
+      SELECT status AS label, COUNT(*) AS value
+      FROM orders
+      GROUP BY status
+      ORDER BY value DESC
+    `);
+
+    const [newUsers] = await pool.query(`
+      SELECT DATE(created_at) AS label, COUNT(*) AS value
+      FROM users
+      WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)
+      GROUP BY DATE(created_at)
+      ORDER BY DATE(created_at)
+    `);
+
+    res.json({
+      daily_sales: dailySales.map((row) => ({ label: String(row.label).slice(0, 10), value: Number(row.value || 0) })),
+      top_products: topProducts.map((row) => ({ label: row.label, value: Number(row.value || 0) })),
+      order_status: orderStatus.map((row) => ({ label: row.label, value: Number(row.value || 0) })),
+      new_users: newUsers.map((row) => ({ label: String(row.label).slice(0, 10), value: Number(row.value || 0) }))
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch admin metrics" });
+  }
+});
+
+app.get("/cart", requireAuth, async (req, res) => {
+  try {
+    const [items] = await pool.query(
+      "SELECT item_key, product_name, category, quantity, price, updated_at FROM cart_items WHERE user_id = ? ORDER BY updated_at DESC",
+      [req.user.sub]
+    );
+    res.json(items);
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch cart" });
+  }
+});
+
+app.put("/cart", requireAuth, async (req, res) => {
+  const items = Array.isArray(req.body?.items) ? req.body.items : [];
+  const connection = await pool.getConnection();
+
+  try {
+    await connection.beginTransaction();
+    await connection.query("DELETE FROM cart_items WHERE user_id = ?", [req.user.sub]);
+
+    const normalizedItems = items
+      .filter((item) => item.item_key && Number(item.quantity) > 0)
+      .map((item) => [
+        req.user.sub,
+        String(item.item_key),
+        String(item.product_name || "Menu item"),
+        item.category ? String(item.category) : null,
+        Number(item.quantity) || 1,
+        Number(item.price) || 0
+      ]);
+
+    if (normalizedItems.length > 0) {
+      await connection.query(
+        "INSERT INTO cart_items (user_id, item_key, product_name, category, quantity, price) VALUES ?",
+        [normalizedItems]
+      );
+    }
+
+    await connection.commit();
+    res.json({ message: "Cart saved", count: normalizedItems.length });
+  } catch (error) {
+    await connection.rollback();
+    res.status(500).json({ error: "Failed to save cart" });
+  } finally {
+    connection.release();
+  }
+});
+
 app.post("/orders", async (req, res) => {
+  attachOptionalUser(req);
   const { customer_name, customer_phone, total, status, items = [] } = req.body;
 
   if (!customer_name || !customer_phone || total === undefined) {
@@ -744,8 +993,8 @@ app.post("/orders", async (req, res) => {
     await connection.beginTransaction();
 
     const [orderResult] = await connection.query(
-      "INSERT INTO orders (customer_name, customer_phone, total, status) VALUES (?, ?, ?, ?)",
-      [customer_name, customer_phone, total, status || "pending"]
+      "INSERT INTO orders (user_id, customer_name, customer_phone, total, status) VALUES (?, ?, ?, ?, ?)",
+      [req.user?.sub || null, customer_name, customer_phone, total, status || "pending"]
     );
 
     const normalizedItems = Array.isArray(items) ? items.filter((item) => item.quantity > 0) : [];

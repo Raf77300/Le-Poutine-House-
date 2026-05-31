@@ -68,6 +68,9 @@ import com.example.ui.theme.PrimaryBlack
 import com.example.ui.theme.CreamBackground
 import com.example.ui.theme.White
 import com.example.viewmodel.AdminProduct
+import com.example.viewmodel.AdminMetrics
+import com.example.viewmodel.AdminOrder
+import com.example.viewmodel.MetricPoint
 import com.example.viewmodel.AuthState
 import com.example.viewmodel.AuthUser
 import com.example.viewmodel.CheckoutState
@@ -95,6 +98,7 @@ sealed interface Screen {
     object Home : Screen
     object Menu : Screen
     object Cart : Screen
+    object MyOrders : Screen
     object Story : Screen
     object HouseTour : Screen
     object AdminDashboard : Screen
@@ -197,8 +201,12 @@ fun PoutineHouseApp(viewModel: PoutineViewModel = viewModel()) {
                                     onNavigateToProducts = {
                                         viewModel.setSelectedCategory(null)
                                         currentScreen = Screen.Menu
+                                    },
+                                    onNavigateToOrders = {
+                                        currentScreen = Screen.MyOrders
                                     }
                                 )
+                                Screen.MyOrders -> MyOrdersScreen(viewModel = viewModel)
                                 Screen.Story -> StoryScreen()
                                 Screen.HouseTour -> HouseTourScreen()
                                 Screen.AdminDashboard -> AdminDashboardScreen(
@@ -2416,7 +2424,8 @@ fun MenuProductCard(
 @Composable
 fun CartScreen(
     viewModel: PoutineViewModel,
-    onNavigateToProducts: () -> Unit
+    onNavigateToProducts: () -> Unit,
+    onNavigateToOrders: () -> Unit
 ) {
     val cartList by viewModel.cart.collectAsState()
     val checkoutState by viewModel.checkoutState.collectAsState()
@@ -2485,6 +2494,19 @@ fun CartScreen(
                 ) {
                     Text("Order More Poutine", fontWeight = FontWeight.Bold)
                 }
+                Spacer(modifier = Modifier.height(10.dp))
+                OutlinedButton(
+                    onClick = {
+                        viewModel.resetCheckout()
+                        viewModel.refreshCustomerOrders()
+                        onNavigateToOrders()
+                    },
+                    shape = RoundedCornerShape(20.dp)
+                ) {
+                    Icon(Icons.Default.ReceiptLong, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("View My Orders", fontWeight = FontWeight.Bold, color = PrimaryBlack)
+                }
             }
         }
         return
@@ -2534,13 +2556,33 @@ fun CartScreen(
         contentPadding = PaddingValues(bottom = 32.dp)
     ) {
         item {
-            Text(
-                text = "My Poutine Feast Cart",
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Black,
-                color = PrimaryBlack,
-                modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 24.dp, bottom = 12.dp)
-            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 24.dp, end = 24.dp, top = 24.dp, bottom = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "My Poutine Feast Cart",
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Black,
+                    color = PrimaryBlack,
+                    modifier = Modifier.weight(1f)
+                )
+                OutlinedButton(
+                    onClick = {
+                        viewModel.refreshCustomerOrders()
+                        onNavigateToOrders()
+                    },
+                    shape = RoundedCornerShape(16.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                ) {
+                    Icon(Icons.Default.ReceiptLong, contentDescription = null, tint = CanadianRed, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Orders", color = PrimaryBlack, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                }
+            }
         }
 
         items(cartList) { item ->
@@ -2905,6 +2947,81 @@ fun AdminStatCard(
 }
 
 @Composable
+fun AdminMetricsPanel(metrics: AdminMetrics) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 16.dp),
+        colors = CardDefaults.cardColors(containerColor = PrimaryBlack),
+        shape = RoundedCornerShape(24.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Analytics, contentDescription = null, tint = GoldenPotato)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Live metrics", color = Color.White, fontWeight = FontWeight.Black, fontSize = 17.sp)
+            }
+            MiniBarChart("Sales by day", metrics.dailySales, valuePrefix = "$")
+            MiniBarChart("Top products", metrics.topProducts)
+            MiniBarChart("Order status", metrics.orderStatus)
+            MiniBarChart("New users", metrics.newUsers)
+        }
+    }
+}
+
+@Composable
+fun MiniBarChart(
+    title: String,
+    points: List<MetricPoint>,
+    valuePrefix: String = ""
+) {
+    val maxValue = points.maxOfOrNull { it.value }?.takeIf { it > 0.0 } ?: 1.0
+    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+        Text(title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+        if (points.isEmpty()) {
+            Text("No data yet", color = Color.White.copy(alpha = 0.62f), fontSize = 11.sp)
+        } else {
+            points.take(5).forEach { point ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = point.label.takeLast(10),
+                        color = Color.White.copy(alpha = 0.72f),
+                        fontSize = 10.sp,
+                        modifier = Modifier.width(82.dp),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(10.dp)
+                            .background(Color.White.copy(alpha = 0.12f), RoundedCornerShape(10.dp))
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .fillMaxWidth((point.value / maxValue).toFloat().coerceIn(0.05f, 1f))
+                                .background(GoldenPotato, RoundedCornerShape(10.dp))
+                        )
+                    }
+                    Text(
+                        text = if (valuePrefix.isBlank()) point.value.toInt().toString() else "$valuePrefix${String.format("%.0f", point.value)}",
+                        color = Color.White,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.width(42.dp),
+                        textAlign = TextAlign.End
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun ImageUploadField(
     label: String,
     value: String,
@@ -3074,6 +3191,7 @@ fun AdminDashboardScreen(
     val users by viewModel.adminUsers.collectAsState()
     val products by viewModel.adminProducts.collectAsState()
     val orders by viewModel.adminOrders.collectAsState()
+    val metrics by viewModel.adminMetrics.collectAsState()
     val adminUiState by viewModel.adminUiState.collectAsState()
     val savedHomeSettings by viewModel.homeSettings.collectAsState()
     var title by remember { mutableStateOf("") }
@@ -3156,6 +3274,40 @@ fun AdminDashboardScreen(
         }
     }
 
+    val heroLogoPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            uploadingImageFor = "hero"
+            viewModel.uploadImage(context.contentResolver, uri) { imagePath, error ->
+                uploadingImageFor = null
+                if (imagePath != null) {
+                    heroLogo = imagePath
+                    alert = SweetAlertInfo("Logo uploaded", "Preview it, then save the home blocks.", SweetAlertType.Success)
+                } else {
+                    alert = SweetAlertInfo("Invalid image", error ?: "Only PNG, JPG, JPEG, and WEBP images are allowed.", SweetAlertType.Error)
+                }
+            }
+        }
+    }
+
+    val featuredImagePicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            uploadingImageFor = "featured"
+            viewModel.uploadImage(context.contentResolver, uri) { imagePath, error ->
+                uploadingImageFor = null
+                if (imagePath != null) {
+                    featuredImage = imagePath
+                    alert = SweetAlertInfo("Featured image uploaded", "Preview it, then save the home blocks.", SweetAlertType.Success)
+                } else {
+                    alert = SweetAlertInfo("Invalid image", error ?: "Only PNG, JPG, JPEG, and WEBP images are allowed.", SweetAlertType.Error)
+                }
+            }
+        }
+    }
+
     LaunchedEffect(Unit) {
         viewModel.loadAdminData()
         alert = SweetAlertInfo(
@@ -3214,6 +3366,10 @@ fun AdminDashboardScreen(
         }
 
         item {
+            AdminMetricsPanel(metrics = metrics)
+        }
+
+        item {
             LazyRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 contentPadding = PaddingValues(bottom = 16.dp)
@@ -3259,8 +3415,12 @@ fun AdminDashboardScreen(
                     ImageUploadField(
                         label = "Main logo",
                         value = heroLogo,
-                        isUploading = false,
-                        onPickImage = { heroLogo = "img_poutine_family_logo" },
+                        isUploading = uploadingImageFor == "hero",
+                        onPickImage = {
+                            heroLogoPicker.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        },
                         onClear = { heroLogo = "" }
                     )
                     AuthTextField(value = eyebrowText, onValueChange = { eyebrowText = it }, label = "Premium text", leadingIcon = { Icon(Icons.Default.Star, contentDescription = null, tint = GoldenPotato) })
@@ -3302,8 +3462,12 @@ fun AdminDashboardScreen(
                     ImageUploadField(
                         label = "Featured image",
                         value = featuredImage,
-                        isUploading = false,
-                        onPickImage = { featuredImage = "abuelos" },
+                        isUploading = uploadingImageFor == "featured",
+                        onPickImage = {
+                            featuredImagePicker.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        },
                         onClear = { featuredImage = "" }
                     )
                     AuthTextField(value = houseTourTitle, onValueChange = { houseTourTitle = it }, label = "House tour title", leadingIcon = { Icon(Icons.Default.Home, contentDescription = null, tint = GoldenPotato) })
@@ -3962,6 +4126,164 @@ fun AdminDashboardScreen(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+fun MyOrdersScreen(viewModel: PoutineViewModel) {
+    val orders by viewModel.customerOrders.collectAsState()
+    val authState by viewModel.authState.collectAsState()
+    var expandedOrderId by remember { mutableStateOf<Int?>(null) }
+
+    LaunchedEffect(authState) {
+        if (authState is AuthState.Authenticated) {
+            viewModel.refreshCustomerOrders()
+        }
+    }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .testTag("my_orders_screen_root"),
+        contentPadding = PaddingValues(24.dp)
+    ) {
+        item {
+            Text(
+                text = "My Orders",
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Black,
+                color = PrimaryBlack
+            )
+            Text(
+                text = "Track each feast from pending to delivered.",
+                color = Color.Gray,
+                fontSize = 13.sp,
+                modifier = Modifier.padding(top = 4.dp, bottom = 18.dp)
+            )
+        }
+
+        if (authState !is AuthState.Authenticated) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = Color.White),
+                    border = BorderStroke(1.dp, PotatoBeige.copy(alpha = 0.35f)),
+                    shape = RoundedCornerShape(24.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(18.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Icon(Icons.Default.Lock, contentDescription = null, tint = CanadianRed, modifier = Modifier.size(34.dp))
+                        Text("Login required", color = PrimaryBlack, fontWeight = FontWeight.Black, modifier = Modifier.padding(top = 8.dp))
+                        Text(
+                            "Sign in so we can show your saved cart and order history.",
+                            color = Color.Gray,
+                            fontSize = 12.sp,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+            }
+        } else if (orders.isEmpty()) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = Color.White),
+                    border = BorderStroke(1.dp, PotatoBeige.copy(alpha = 0.35f)),
+                    shape = RoundedCornerShape(24.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(20.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Icon(Icons.Default.ReceiptLong, contentDescription = null, tint = GoldenPotato, modifier = Modifier.size(42.dp))
+                        Text("No orders yet", color = PrimaryBlack, fontWeight = FontWeight.Black, modifier = Modifier.padding(top = 8.dp))
+                        Text("Your next poutine order will appear here.", color = Color.Gray, fontSize = 12.sp)
+                    }
+                }
+            }
+        } else {
+            items(orders) { order ->
+                CustomerOrderCard(
+                    order = order,
+                    expanded = expandedOrderId == order.id,
+                    onToggle = { expandedOrderId = if (expandedOrderId == order.id) null else order.id }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun CustomerOrderCard(order: AdminOrder, expanded: Boolean, onToggle: () -> Unit) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 7.dp)
+            .clickable { onToggle() },
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        border = BorderStroke(1.dp, PotatoBeige.copy(alpha = 0.35f)),
+        shape = RoundedCornerShape(22.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .background(CanadianRed.copy(alpha = 0.10f), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(Icons.Default.ReceiptLong, contentDescription = null, tint = CanadianRed)
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Order #${order.id}", color = PrimaryBlack, fontWeight = FontWeight.Black)
+                    Text(order.createdAt.take(10), color = Color.Gray, fontSize = 12.sp)
+                }
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(String.format("$%.2f", order.total), color = CanadianRed, fontWeight = FontWeight.Black)
+                    Text(order.status.uppercase(), color = GoldenPotato, fontSize = 10.sp, fontWeight = FontWeight.Black)
+                }
+            }
+
+            OrderStatusTimeline(order.status)
+
+            AnimatedVisibility(visible = expanded) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(CreamBackground, RoundedCornerShape(16.dp))
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(7.dp)
+                ) {
+                    Text("Items", color = PrimaryBlack, fontWeight = FontWeight.Black, fontSize = 13.sp)
+                    order.items.forEach { item ->
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("${item.quantity}x ${item.productName}", color = PrimaryBlack, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                            Text(String.format("$%.2f", item.price * item.quantity), color = CanadianRed, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun OrderStatusTimeline(status: String) {
+    val steps = listOf("pending", "preparing", "ready", "delivered")
+    val activeIndex = steps.indexOf(status).coerceAtLeast(0)
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        steps.forEachIndexed { index, step ->
+            val active = index <= activeIndex
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(7.dp)
+                    .background(if (active) CanadianRed else PotatoBeige.copy(alpha = 0.55f), RoundedCornerShape(8.dp))
+            )
         }
     }
 }

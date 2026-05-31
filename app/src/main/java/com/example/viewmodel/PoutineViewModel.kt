@@ -40,7 +40,8 @@ data class AuthUser(
     val id: Int,
     val name: String,
     val email: String,
-    val role: String
+    val role: String,
+    val token: String = ""
 )
 
 sealed interface AuthState {
@@ -82,6 +83,18 @@ data class AdminStats(
     val totalProducts: Int = 0,
     val totalOrders: Int = 0,
     val totalRevenue: Double = 0.0
+)
+
+data class MetricPoint(
+    val label: String,
+    val value: Double
+)
+
+data class AdminMetrics(
+    val dailySales: List<MetricPoint> = emptyList(),
+    val topProducts: List<MetricPoint> = emptyList(),
+    val orderStatus: List<MetricPoint> = emptyList(),
+    val newUsers: List<MetricPoint> = emptyList()
 )
 
 data class AdminUser(
@@ -143,6 +156,8 @@ class PoutineViewModel : ViewModel() {
     private val _adminUsers = MutableStateFlow<List<AdminUser>>(emptyList())
     private val _adminProducts = MutableStateFlow<List<AdminProduct>>(emptyList())
     private val _adminOrders = MutableStateFlow<List<AdminOrder>>(emptyList())
+    private val _customerOrders = MutableStateFlow<List<AdminOrder>>(emptyList())
+    private val _adminMetrics = MutableStateFlow(AdminMetrics())
     private val _adminUiState = MutableStateFlow(AdminUiState())
     private val _homeSettings = MutableStateFlow(HomeSettings())
     private val _homeSections = MutableStateFlow(
@@ -158,6 +173,7 @@ class PoutineViewModel : ViewModel() {
             )
         )
     )
+    private var isLoadingRemoteCart = false
 
     init {
         loadHomeSections()
@@ -175,6 +191,8 @@ class PoutineViewModel : ViewModel() {
     val adminUsers: StateFlow<List<AdminUser>> = _adminUsers
     val adminProducts: StateFlow<List<AdminProduct>> = _adminProducts
     val adminOrders: StateFlow<List<AdminOrder>> = _adminOrders
+    val customerOrders: StateFlow<List<AdminOrder>> = _customerOrders
+    val adminMetrics: StateFlow<AdminMetrics> = _adminMetrics
     val adminUiState: StateFlow<AdminUiState> = _adminUiState
     val homeSections: StateFlow<List<HomeSection>> = _homeSections
     val homeSettings: StateFlow<HomeSettings> = _homeSettings
@@ -221,6 +239,7 @@ class PoutineViewModel : ViewModel() {
             currentCart.add(CartItem(item, quantity))
         }
         _cart.value = currentCart
+        syncCartToBackend()
     }
 
     fun updateCartQuantity(itemId: String, newQuantity: Int) {
@@ -233,15 +252,18 @@ class PoutineViewModel : ViewModel() {
                 currentCart[index] = currentCart[index].copy(quantity = newQuantity)
             }
             _cart.value = currentCart
+            syncCartToBackend()
         }
     }
 
     fun removeFromCart(itemId: String) {
         _cart.value = _cart.value.filter { it.foodItem.id != itemId }
+        syncCartToBackend()
     }
 
     fun clearCart() {
         _cart.value = emptyList()
+        syncCartToBackend()
     }
 
     // Filters
@@ -280,9 +302,11 @@ class PoutineViewModel : ViewModel() {
             val orderId = createBackendOrder()
             if (orderId != null) {
                 _cart.value = emptyList()
+                syncCartToBackend()
                 _checkoutState.value = CheckoutState.Success("POUT-$orderId")
                 _adminStats.value = fetchAdminStats()
                 _adminOrders.value = fetchAdminOrders()
+                _customerOrders.value = fetchCustomerOrders()
             } else {
                 _checkoutState.value = CheckoutState.Error("Could not place order")
             }
@@ -299,18 +323,6 @@ class PoutineViewModel : ViewModel() {
             return
         }
 
-        if (email.trim().equals("admin@poutine.local", ignoreCase = true) && password == "12345") {
-            _authState.value = AuthState.Authenticated(
-                AuthUser(
-                    id = 1,
-                    name = "Admin",
-                    email = "admin@poutine.local",
-                    role = "admin"
-                )
-            )
-            return
-        }
-
         viewModelScope.launch {
             _authState.value = AuthState.Loading
             _authState.value = authenticate(
@@ -319,6 +331,9 @@ class PoutineViewModel : ViewModel() {
                     .put("email", email.trim())
                     .put("password", password)
             )
+            if (_authState.value is AuthState.Authenticated) {
+                loadUserCartAndOrders()
+            }
         }
     }
 
@@ -343,6 +358,19 @@ class PoutineViewModel : ViewModel() {
                     .put("password", password)
                     .put("role", if (asAdmin) "admin" else "customer")
             )
+            if (_authState.value is AuthState.Authenticated) {
+                loadUserCartAndOrders()
+            }
+        }
+    }
+
+    fun loadUserCartAndOrders() {
+        viewModelScope.launch {
+            val remoteCart = fetchUserCart()
+            isLoadingRemoteCart = true
+            _cart.value = remoteCart
+            isLoadingRemoteCart = false
+            _customerOrders.value = fetchCustomerOrders()
         }
     }
 
@@ -360,6 +388,7 @@ class PoutineViewModel : ViewModel() {
         viewModelScope.launch {
             _adminUiState.value = _adminUiState.value.copy(loading = true)
             _adminStats.value = fetchAdminStats()
+            _adminMetrics.value = fetchAdminMetrics()
             _adminUsers.value = fetchAdminUsers()
             _adminProducts.value = fetchAdminProducts()
             _adminOrders.value = fetchAdminOrders()
@@ -510,6 +539,13 @@ class PoutineViewModel : ViewModel() {
     fun logout() {
         _authState.value = AuthState.Idle
         _cart.value = emptyList()
+        _customerOrders.value = emptyList()
+    }
+
+    fun refreshCustomerOrders() {
+        viewModelScope.launch {
+            _customerOrders.value = fetchCustomerOrders()
+        }
     }
 
     fun clearAuthError() {
@@ -545,7 +581,8 @@ class PoutineViewModel : ViewModel() {
                             id = userJson.getInt("id"),
                             name = userJson.getString("name"),
                             email = userJson.getString("email"),
-                            role = userJson.optString("role", "customer")
+                            role = userJson.optString("role", "customer"),
+                            token = responseJson.optString("token", "")
                         )
                     )
                 } else {
@@ -608,6 +645,24 @@ class PoutineViewModel : ViewModel() {
                 )
             } catch (error: Exception) {
                 AdminStats()
+            }
+        }
+    }
+
+    private suspend fun fetchAdminMetrics(): AdminMetrics {
+        return withContext(Dispatchers.IO) {
+            try {
+                val connection = openJsonConnection("/admin/metrics", "GET")
+                if (connection.responseCode !in 200..299) return@withContext AdminMetrics()
+                val json = JSONObject(readResponse(connection))
+                AdminMetrics(
+                    dailySales = parseMetricPoints(json.optJSONArray("daily_sales") ?: JSONArray()),
+                    topProducts = parseMetricPoints(json.optJSONArray("top_products") ?: JSONArray()),
+                    orderStatus = parseMetricPoints(json.optJSONArray("order_status") ?: JSONArray()),
+                    newUsers = parseMetricPoints(json.optJSONArray("new_users") ?: JSONArray())
+                )
+            } catch (error: Exception) {
+                AdminMetrics()
             }
         }
     }
@@ -693,6 +748,71 @@ class PoutineViewModel : ViewModel() {
                 (0 until json.length()).map { index -> parseAdminOrder(json.getJSONObject(index)) }
             } catch (error: Exception) {
                 emptyList()
+            }
+        }
+    }
+
+    private suspend fun fetchCustomerOrders(): List<AdminOrder> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val connection = openJsonConnection("/orders/mine", "GET")
+                if (connection.responseCode !in 200..299) return@withContext emptyList()
+                val json = JSONArray(readResponse(connection))
+                (0 until json.length()).map { index -> parseAdminOrder(json.getJSONObject(index)) }
+            } catch (error: Exception) {
+                emptyList()
+            }
+        }
+    }
+
+    private suspend fun fetchUserCart(): List<CartItem> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val connection = openJsonConnection("/cart", "GET")
+                if (connection.responseCode !in 200..299) return@withContext emptyList()
+                val json = JSONArray(readResponse(connection))
+                (0 until json.length()).mapNotNull { index ->
+                    val item = json.getJSONObject(index)
+                    val key = item.optString("item_key")
+                    val foodItem = MenuData.items.firstOrNull { it.id == key } ?: return@mapNotNull null
+                    CartItem(foodItem = foodItem, quantity = item.optInt("quantity", 1).coerceAtLeast(1))
+                }
+            } catch (error: Exception) {
+                emptyList()
+            }
+        }
+    }
+
+    private fun syncCartToBackend() {
+        if (isLoadingRemoteCart) return
+        if ((_authState.value as? AuthState.Authenticated)?.user?.token.isNullOrBlank()) return
+
+        viewModelScope.launch {
+            saveUserCart()
+        }
+    }
+
+    private suspend fun saveUserCart(): Boolean {
+        return withContext(Dispatchers.IO) {
+            try {
+                val payload = JSONObject().put(
+                    "items",
+                    JSONArray(
+                        _cart.value.map { cartItem ->
+                            JSONObject()
+                                .put("item_key", cartItem.foodItem.id)
+                                .put("product_name", cartItem.foodItem.name)
+                                .put("category", cartItem.foodItem.category.name)
+                                .put("quantity", cartItem.quantity)
+                                .put("price", cartItem.foodItem.price)
+                        }
+                    )
+                )
+                val connection = openJsonConnection("/cart", "PUT", doOutput = true)
+                connection.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
+                connection.responseCode in 200..299
+            } catch (error: Exception) {
+                false
             }
         }
     }
@@ -809,7 +929,7 @@ class PoutineViewModel : ViewModel() {
 
                 val response = JSONObject(readResponse(connection))
                 if (connection.responseCode in 200..299) {
-                    response.getString("path") to null
+                    response.optString("url", response.optString("path")) to null
                 } else {
                     null to response.optString("error", "Image upload failed.")
                 }
@@ -854,14 +974,7 @@ class PoutineViewModel : ViewModel() {
                     .put("active", section.active)
                     .put("sort_order", section.sortOrder)
 
-                val connection = (URL("$API_BASE_URL$path").openConnection() as HttpURLConnection).apply {
-                    requestMethod = method
-                    connectTimeout = API_TIMEOUT_MS
-                    readTimeout = API_TIMEOUT_MS
-                    doOutput = true
-                    setRequestProperty("Content-Type", "application/json")
-                    setRequestProperty("Accept", "application/json")
-                }
+                val connection = openJsonConnection(path, method, doOutput = true)
 
                 connection.outputStream.use { outputStream ->
                     outputStream.write(payload.toString().toByteArray(Charsets.UTF_8))
@@ -878,12 +991,7 @@ class PoutineViewModel : ViewModel() {
     private suspend fun deleteHomeSectionFromBackend(sectionId: Int): Boolean {
         return withContext(Dispatchers.IO) {
             try {
-                val connection = (URL("$API_BASE_URL/home-sections/$sectionId").openConnection() as HttpURLConnection).apply {
-                    requestMethod = "DELETE"
-                    connectTimeout = API_TIMEOUT_MS
-                    readTimeout = API_TIMEOUT_MS
-                    setRequestProperty("Accept", "application/json")
-                }
+                val connection = openJsonConnection("/home-sections/$sectionId", "DELETE")
 
                 connection.responseCode in 200..299
             } catch (error: Exception) {
@@ -893,6 +1001,7 @@ class PoutineViewModel : ViewModel() {
     }
 
     private fun openJsonConnection(path: String, method: String, doOutput: Boolean = false): HttpURLConnection {
+        val token = (_authState.value as? AuthState.Authenticated)?.user?.token.orEmpty()
         return (URL("$API_BASE_URL$path").openConnection() as HttpURLConnection).apply {
             requestMethod = method
             connectTimeout = API_TIMEOUT_MS
@@ -900,6 +1009,9 @@ class PoutineViewModel : ViewModel() {
             this.doOutput = doOutput
             setRequestProperty("Content-Type", "application/json")
             setRequestProperty("Accept", "application/json")
+            if (token.isNotBlank()) {
+                setRequestProperty("Authorization", "Bearer $token")
+            }
         }
     }
 
@@ -946,6 +1058,16 @@ class PoutineViewModel : ViewModel() {
                 productName = item.optString("product_name", "Menu item"),
                 quantity = item.optInt("quantity", 1),
                 price = item.optDouble("price", 0.0)
+            )
+        }
+    }
+
+    private fun parseMetricPoints(jsonArray: JSONArray): List<MetricPoint> {
+        return (0 until jsonArray.length()).map { index ->
+            val item = jsonArray.getJSONObject(index)
+            MetricPoint(
+                label = item.optString("label", "Item"),
+                value = item.optDouble("value", 0.0)
             )
         }
     }
