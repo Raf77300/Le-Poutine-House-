@@ -324,8 +324,8 @@ fun AuthScreen(
                     colors = CardDefaults.cardColors(containerColor = Color.White),
                     border = BorderStroke(2.dp, GoldenPotato.copy(alpha = 0.7f))
                 ) {
-                    AsyncImage(
-                        model = R.drawable.img_poutine_family_logo,
+                    Image(
+                        painter = painterResource(id = R.drawable.img_poutine_family_logo),
                         contentDescription = "Le Poutine House",
                         modifier = Modifier
                             .fillMaxSize()
@@ -586,8 +586,8 @@ fun DrawableImageByName(
             contentScale = contentScale
         )
     } else {
-        AsyncImage(
-            model = if (drawableId != 0) drawableId else fallbackResId,
+        Image(
+            painter = painterResource(id = if (drawableId != 0) drawableId else fallbackResId),
             contentDescription = contentDescription,
             modifier = modifier,
             contentScale = contentScale
@@ -3119,8 +3119,8 @@ fun AdminDashboardHeader(onLogout: () -> Unit) {
                     colors = CardDefaults.cardColors(containerColor = Color.White),
                     border = BorderStroke(1.dp, GoldenPotato.copy(alpha = 0.55f))
                 ) {
-                    AsyncImage(
-                        model = R.drawable.img_poutine_family_logo,
+                    Image(
+                        painter = painterResource(id = R.drawable.img_poutine_family_logo),
                         contentDescription = "Le Poutine House logo",
                         modifier = Modifier
                             .fillMaxSize()
