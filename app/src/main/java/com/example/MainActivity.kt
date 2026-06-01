@@ -78,6 +78,7 @@ import com.example.viewmodel.HomeSettings
 import com.example.viewmodel.HomeSection
 import com.example.viewmodel.PoutineViewModel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -109,6 +110,7 @@ sealed interface Screen {
 fun PoutineHouseApp(viewModel: PoutineViewModel = viewModel()) {
     var currentScreen by remember { mutableStateOf<Screen>(Screen.Home) }
     var selectedProduct by remember { mutableStateOf<FoodItem?>(null) }
+    val appScope = rememberCoroutineScope()
     
     // Auto-advance Splash Screen after 2.8 seconds
     LaunchedEffect(key1 = currentScreen) {
@@ -160,7 +162,11 @@ fun PoutineHouseApp(viewModel: PoutineViewModel = viewModel()) {
                         AnimatedContent(
                             targetState = currentScreen,
                             transitionSpec = {
-                                fadeIn(animationSpec = tween(220)) togetherWith fadeOut(animationSpec = tween(220))
+                                if (initialState == Screen.AdminDashboard || targetState == Screen.AdminDashboard) {
+                                    fadeIn(animationSpec = tween(90)) togetherWith fadeOut(animationSpec = tween(90))
+                                } else {
+                                    fadeIn(animationSpec = tween(220)) togetherWith fadeOut(animationSpec = tween(220))
+                                }
                             },
                             label = "MainScreenTransition"
                         ) { screen ->
@@ -212,9 +218,12 @@ fun PoutineHouseApp(viewModel: PoutineViewModel = viewModel()) {
                                 Screen.AdminDashboard -> AdminDashboardScreen(
                                     viewModel = viewModel,
                                     onLogout = {
-                                        viewModel.logout()
-                                        selectedProduct = null
                                         currentScreen = Screen.Home
+                                        selectedProduct = null
+                                        appScope.launch {
+                                            delay(180)
+                                            viewModel.logout()
+                                        }
                                     }
                                 )
                                 Screen.Contact -> ContactScreen()
