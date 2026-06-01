@@ -70,6 +70,7 @@ import com.example.ui.theme.White
 import com.example.viewmodel.AdminProduct
 import com.example.viewmodel.AdminMetrics
 import com.example.viewmodel.AdminOrder
+import com.example.viewmodel.Coupon
 import com.example.viewmodel.MetricPoint
 import com.example.viewmodel.AuthState
 import com.example.viewmodel.AuthUser
@@ -2438,8 +2439,19 @@ fun CartScreen(
 ) {
     val cartList by viewModel.cart.collectAsState()
     val checkoutState by viewModel.checkoutState.collectAsState()
+    val appliedCoupon by viewModel.appliedCoupon.collectAsState()
+    val couponMessage by viewModel.couponMessage.collectAsState()
     var promoCode by remember { mutableStateOf("") }
+    var deliveryAddress by remember { mutableStateOf("") }
     val context = LocalContext.current
+
+    LaunchedEffect(checkoutState) {
+        val error = checkoutState as? CheckoutState.Error
+        if (error != null) {
+            Toast.makeText(context, error.message, Toast.LENGTH_SHORT).show()
+            viewModel.resetCheckout()
+        }
+    }
 
     if (checkoutState is CheckoutState.Processing) {
         Box(
@@ -2685,17 +2697,18 @@ fun CartScreen(
 
         // Coupon Section
         item {
-            Row(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 24.dp, vertical = 16.dp),
-                verticalAlignment = Alignment.CenterVertically
             ) {
                 OutlinedTextField(
-                    value = promoCode,
-                    onValueChange = { promoCode = it },
-                    placeholder = { Text("Coupon (e.g. GRANNYLOVE)", fontSize = 12.sp, color = Color.Gray.copy(alpha = 0.7f)) },
-                    modifier = Modifier.weight(1f).height(48.dp),
+                    value = deliveryAddress,
+                    onValueChange = { deliveryAddress = it },
+                    label = { Text("Delivery address") },
+                    placeholder = { Text("Street, apartment, city", fontSize = 12.sp) },
+                    leadingIcon = { Icon(Icons.Default.LocationOn, contentDescription = null, tint = GoldenPotato) },
+                    modifier = Modifier.fillMaxWidth(),
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedContainerColor = Color.White,
                         unfocusedContainerColor = Color.White,
@@ -2704,23 +2717,47 @@ fun CartScreen(
                         focusedTextColor = PrimaryBlack,
                         unfocusedTextColor = PrimaryBlack
                     ),
-                    shape = RoundedCornerShape(24.dp),
-                    singleLine = true
+                    shape = RoundedCornerShape(18.dp),
+                    minLines = 2
                 )
-                Spacer(modifier = Modifier.width(12.dp))
-                Button(
-                    onClick = {
-                        if (promoCode.trim().equals("GRANNYLOVE", ignoreCase = true)) {
-                            Toast.makeText(context, "15% discount applied!", Toast.LENGTH_SHORT).show()
-                        } else {
-                            Toast.makeText(context, "Invalid Coupon", Toast.LENGTH_SHORT).show()
-                        }
-                    },
-                    modifier = Modifier.height(48.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlack),
-                    shape = RoundedCornerShape(24.dp)
-                ) {
-                    Text("Apply", color = Color.White, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(12.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = promoCode,
+                        onValueChange = { promoCode = it.uppercase() },
+                        placeholder = { Text("Coupon (e.g. GRANNYLOVE)", fontSize = 12.sp, color = Color.Gray.copy(alpha = 0.7f)) },
+                        modifier = Modifier.weight(1f).height(48.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedContainerColor = Color.White,
+                            unfocusedContainerColor = Color.White,
+                            focusedBorderColor = GoldenPotato,
+                            unfocusedBorderColor = PotatoBeige.copy(alpha = 0.3f),
+                            focusedTextColor = PrimaryBlack,
+                            unfocusedTextColor = PrimaryBlack
+                        ),
+                        shape = RoundedCornerShape(24.dp),
+                        singleLine = true
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Button(
+                        onClick = {
+                            viewModel.applyCoupon(promoCode)
+                        },
+                        modifier = Modifier.height(48.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlack),
+                        shape = RoundedCornerShape(24.dp)
+                    ) {
+                        Text("Apply", color = Color.White, fontWeight = FontWeight.Bold)
+                    }
+                }
+                couponMessage?.let { message ->
+                    Text(
+                        text = message,
+                        color = if (appliedCoupon != null) Color(0xFF2E7D32) else CanadianRed,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(start = 8.dp, top = 6.dp)
+                    )
                 }
             }
         }
@@ -2773,6 +2810,16 @@ fun CartScreen(
                         }
                     }
 
+                    if (viewModel.couponDiscount > 0) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("Coupon ${appliedCoupon?.code.orEmpty()}", color = Color(0xFF2E7D32), fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            Text(String.format("-$%.2f", viewModel.couponDiscount), fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color(0xFF2E7D32))
+                        }
+                    }
+
                     if (viewModel.cartDelivery > 0) {
                         val gap = 30.0 - viewModel.cartSubtotal
                         Card(
@@ -2817,7 +2864,13 @@ fun CartScreen(
         item {
             Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp)) {
                 Button(
-                    onClick = { viewModel.checkout() },
+                    onClick = {
+                        if (deliveryAddress.trim().length < 8) {
+                            Toast.makeText(context, "Add a valid delivery address", Toast.LENGTH_SHORT).show()
+                        } else {
+                            viewModel.checkout(deliveryAddress)
+                        }
+                    },
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(54.dp)
@@ -3200,6 +3253,7 @@ fun AdminDashboardScreen(
     val users by viewModel.adminUsers.collectAsState()
     val products by viewModel.adminProducts.collectAsState()
     val orders by viewModel.adminOrders.collectAsState()
+    val coupons by viewModel.adminCoupons.collectAsState()
     val metrics by viewModel.adminMetrics.collectAsState()
     val adminUiState by viewModel.adminUiState.collectAsState()
     val savedHomeSettings by viewModel.homeSettings.collectAsState()
@@ -3214,8 +3268,16 @@ fun AdminDashboardScreen(
     var productCategory by remember { mutableStateOf("Poutine") }
     var productDescription by remember { mutableStateOf("") }
     var productPrice by remember { mutableStateOf("") }
+    var productStock by remember { mutableStateOf("25") }
+    var productAvailable by remember { mutableStateOf(true) }
     var productImage by remember { mutableStateOf("") }
     var editingProduct by remember { mutableStateOf<AdminProduct?>(null) }
+    var couponCode by remember { mutableStateOf("") }
+    var couponDescription by remember { mutableStateOf("") }
+    var couponType by remember { mutableStateOf("percent") }
+    var couponValue by remember { mutableStateOf("") }
+    var couponActive by remember { mutableStateOf(true) }
+    var editingCoupon by remember { mutableStateOf<Coupon?>(null) }
     var uploadingImageFor by remember { mutableStateOf<String?>(null) }
     var alert by remember { mutableStateOf<SweetAlertInfo?>(null) }
     var adminTab by remember { mutableStateOf("Home Content") }
@@ -3345,8 +3407,19 @@ fun AdminDashboardScreen(
         productCategory = "Poutine"
         productDescription = ""
         productPrice = ""
+        productStock = "25"
+        productAvailable = true
         productImage = ""
         editingProduct = null
+    }
+
+    fun resetCouponForm() {
+        couponCode = ""
+        couponDescription = ""
+        couponType = "percent"
+        couponValue = ""
+        couponActive = true
+        editingCoupon = null
     }
 
     LazyColumn(
@@ -3383,7 +3456,7 @@ fun AdminDashboardScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 contentPadding = PaddingValues(bottom = 16.dp)
             ) {
-                items(listOf("Home Content", "Menu Products", "Orders", "Users", "Settings")) { tab ->
+                items(listOf("Home Content", "Menu Products", "Coupons", "Orders", "Users", "Settings")) { tab ->
                     FilterChip(
                         selected = adminTab == tab,
                         onClick = { adminTab = tab },
@@ -3392,6 +3465,7 @@ fun AdminDashboardScreen(
                             val icon = when (tab) {
                                 "Home Content" -> Icons.Default.Home
                                 "Menu Products" -> Icons.Default.RestaurantMenu
+                                "Coupons" -> Icons.Default.LocalOffer
                                 "Users" -> Icons.Default.People
                                 "Settings" -> Icons.Default.Settings
                                 else -> Icons.Default.Receipt
@@ -3827,6 +3901,27 @@ fun AdminDashboardScreen(
                         leadingIcon = { Icon(Icons.Default.AttachMoney, contentDescription = null, tint = GoldenPotato) },
                         keyboardType = KeyboardType.Decimal
                     )
+                    AuthTextField(
+                        value = productStock,
+                        onValueChange = { productStock = it.filter { char -> char.isDigit() } },
+                        label = "Stock available",
+                        leadingIcon = { Icon(Icons.Default.Inventory, contentDescription = null, tint = GoldenPotato) },
+                        keyboardType = KeyboardType.Number
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(CreamBackground, RoundedCornerShape(16.dp))
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Available for customers", color = PrimaryBlack, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text("Turn off when the item is sold out.", color = Color.Gray, fontSize = 11.sp)
+                        }
+                        Switch(checked = productAvailable, onCheckedChange = { productAvailable = it })
+                    }
                     ImageUploadField(
                         label = "Product image",
                         value = productImage,
@@ -3858,6 +3953,7 @@ fun AdminDashboardScreen(
                     Button(
                         onClick = {
                             val price = productPrice.toDoubleOrNull()
+                            val stock = productStock.toIntOrNull() ?: 0
                             if (productName.trim().length < 3 || productCategory.isBlank() || price == null || price <= 0) {
                                 alert = SweetAlertInfo(
                                     title = "Product incomplete",
@@ -3872,6 +3968,8 @@ fun AdminDashboardScreen(
                                         category = productCategory.trim(),
                                         description = productDescription.trim(),
                                         price = price,
+                                        stock = stock,
+                                        available = productAvailable,
                                         imageUrl = productImage.trim().ifBlank { null }
                                     )
                                 )
@@ -3933,6 +4031,12 @@ fun AdminDashboardScreen(
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
+                                "Stock: ${product.stock} - ${if (product.available) "Available" else "Hidden"}",
+                                color = if (product.available && product.stock > 0) Color(0xFF2E7D32) else CanadianRed,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
                                 product.description,
                                 color = Color.Gray,
                                 fontSize = 12.sp,
@@ -3949,6 +4053,8 @@ fun AdminDashboardScreen(
                                 productCategory = product.category
                                 productDescription = product.description
                                 productPrice = product.price.toString()
+                                productStock = product.stock.toString()
+                                productAvailable = product.available
                                 productImage = product.imageUrl.orEmpty()
                             },
                             modifier = Modifier.weight(1f),
@@ -3961,6 +4067,176 @@ fun AdminDashboardScreen(
                                 viewModel.deleteAdminProduct(product.id)
                                 if (editingProduct?.id == product.id) resetProductForm()
                                 alert = SweetAlertInfo("Deleted", "Product was removed.", SweetAlertType.Success)
+                            },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(containerColor = CanadianRed),
+                            shape = RoundedCornerShape(16.dp)
+                        ) {
+                            Text("Delete", color = Color.White, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        }
+        }
+
+        if (adminTab == "Coupons") {
+        item {
+            Text(
+                text = "Coupon management",
+                color = PrimaryBlack,
+                fontWeight = FontWeight.Black,
+                fontSize = 17.sp,
+                modifier = Modifier.padding(top = 22.dp, bottom = 8.dp)
+            )
+        }
+
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                border = BorderStroke(1.dp, PotatoBeige.copy(alpha = 0.35f)),
+                shape = RoundedCornerShape(24.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        text = if (editingCoupon == null) "Create coupon" else "Edit coupon",
+                        color = PrimaryBlack,
+                        fontWeight = FontWeight.Black
+                    )
+                    AuthTextField(
+                        value = couponCode,
+                        onValueChange = { couponCode = it.uppercase().filter { char -> char.isLetterOrDigit() || char == '_' || char == '-' } },
+                        label = "Code",
+                        leadingIcon = { Icon(Icons.Default.LocalOffer, contentDescription = null, tint = GoldenPotato) }
+                    )
+                    AuthTextField(
+                        value = couponDescription,
+                        onValueChange = { couponDescription = it },
+                        label = "Description",
+                        leadingIcon = { Icon(Icons.Default.Description, contentDescription = null, tint = GoldenPotato) }
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(
+                            selected = couponType == "percent",
+                            onClick = { couponType = "percent" },
+                            label = { Text("Percent") },
+                            leadingIcon = { Icon(Icons.Default.Percent, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                        )
+                        FilterChip(
+                            selected = couponType == "fixed",
+                            onClick = { couponType = "fixed" },
+                            label = { Text("Fixed") },
+                            leadingIcon = { Icon(Icons.Default.AttachMoney, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                        )
+                    }
+                    AuthTextField(
+                        value = couponValue,
+                        onValueChange = { couponValue = it.filter { char -> char.isDigit() || char == '.' } },
+                        label = if (couponType == "percent") "Discount percent" else "Discount amount",
+                        leadingIcon = { Icon(Icons.Default.Sell, contentDescription = null, tint = GoldenPotato) },
+                        keyboardType = KeyboardType.Decimal
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(CreamBackground, RoundedCornerShape(16.dp))
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("Coupon active", color = PrimaryBlack, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        Switch(checked = couponActive, onCheckedChange = { couponActive = it })
+                    }
+                    Button(
+                        onClick = {
+                            val value = couponValue.toDoubleOrNull()
+                            if (couponCode.trim().length < 3 || value == null || value <= 0) {
+                                alert = SweetAlertInfo("Coupon incomplete", "Add a code and valid discount.", SweetAlertType.Warning)
+                            } else {
+                                viewModel.saveAdminCoupon(
+                                    Coupon(
+                                        id = editingCoupon?.id ?: 0,
+                                        code = couponCode.trim(),
+                                        description = couponDescription.trim(),
+                                        discountType = couponType,
+                                        discountValue = value,
+                                        active = couponActive
+                                    )
+                                )
+                                resetCouponForm()
+                                alert = SweetAlertInfo("Saved", "Coupon changes were saved.", SweetAlertType.Success)
+                            }
+                        },
+                        enabled = !adminUiState.savingCoupon,
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = CanadianRed),
+                        shape = RoundedCornerShape(18.dp)
+                    ) {
+                        if (adminUiState.savingCoupon) {
+                            CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Saving...", color = Color.White, fontWeight = FontWeight.Bold)
+                        } else {
+                            Text(if (editingCoupon == null) "Create Coupon" else "Save Coupon", color = Color.White, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    if (editingCoupon != null) {
+                        OutlinedButton(
+                            onClick = { resetCouponForm() },
+                            modifier = Modifier.fillMaxWidth().height(48.dp),
+                            shape = RoundedCornerShape(18.dp)
+                        ) {
+                            Text("Cancel coupon edit", color = PrimaryBlack, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        }
+
+        items(coupons) { coupon ->
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                colors = CardDefaults.cardColors(containerColor = CreamBackground),
+                border = BorderStroke(1.dp, PotatoBeige.copy(alpha = 0.4f)),
+                shape = RoundedCornerShape(18.dp)
+            ) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.LocalOffer, contentDescription = null, tint = if (coupon.active) CanadianRed else Color.Gray)
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(coupon.code, color = PrimaryBlack, fontWeight = FontWeight.Black)
+                            Text(
+                                if (coupon.discountType == "percent") "${coupon.discountValue.toInt()}% off" else String.format("$%.2f off", coupon.discountValue),
+                                color = CanadianRed,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(coupon.description.ifBlank { "No description" }, color = Color.Gray, fontSize = 12.sp)
+                        }
+                        Text(if (coupon.active) "ACTIVE" else "OFF", color = if (coupon.active) Color(0xFF2E7D32) else Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Black)
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = {
+                                editingCoupon = coupon
+                                couponCode = coupon.code
+                                couponDescription = coupon.description
+                                couponType = coupon.discountType
+                                couponValue = coupon.discountValue.toString()
+                                couponActive = coupon.active
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(16.dp)
+                        ) {
+                            Text("Edit", color = PrimaryBlack, fontWeight = FontWeight.Bold)
+                        }
+                        Button(
+                            onClick = {
+                                viewModel.deleteAdminCoupon(coupon.id)
+                                if (editingCoupon?.id == coupon.id) resetCouponForm()
+                                alert = SweetAlertInfo("Deleted", "Coupon was removed.", SweetAlertType.Success)
                             },
                             modifier = Modifier.weight(1f),
                             colors = ButtonDefaults.buttonColors(containerColor = CanadianRed),
@@ -4065,6 +4341,12 @@ fun AdminDashboardScreen(
                         Text(String.format("$%.2f", order.total), color = CanadianRed, fontWeight = FontWeight.Black)
                     }
                     Text("${order.customerPhone} - ${order.status}", color = Color.Gray, fontSize = 12.sp)
+                    if (order.deliveryAddress.isNotBlank()) {
+                        Text("Deliver to: ${order.deliveryAddress}", color = PrimaryBlack, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                    if (!order.couponCode.isNullOrBlank() && order.discount > 0) {
+                        Text("Coupon ${order.couponCode}: -${String.format("$%.2f", order.discount)}", color = Color(0xFF2E7D32), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
                     if (expandedOrderId == order.id) {
                         Column(
                             modifier = Modifier
@@ -4267,6 +4549,13 @@ fun CustomerOrderCard(order: AdminOrder, expanded: Boolean, onToggle: () -> Unit
                         .padding(12.dp),
                     verticalArrangement = Arrangement.spacedBy(7.dp)
                 ) {
+                    if (order.deliveryAddress.isNotBlank()) {
+                        Text("Delivery address", color = PrimaryBlack, fontWeight = FontWeight.Black, fontSize = 13.sp)
+                        Text(order.deliveryAddress, color = Color.Gray, fontSize = 12.sp)
+                    }
+                    if (!order.couponCode.isNullOrBlank() && order.discount > 0) {
+                        Text("Coupon ${order.couponCode}: -${String.format("$%.2f", order.discount)}", color = Color(0xFF2E7D32), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
                     Text("Items", color = PrimaryBlack, fontWeight = FontWeight.Black, fontSize = 13.sp)
                     order.items.forEach { item ->
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -4282,6 +4571,39 @@ fun CustomerOrderCard(order: AdminOrder, expanded: Boolean, onToggle: () -> Unit
 
 @Composable
 fun OrderStatusTimeline(status: String) {
+    val steps = listOf(
+        "pending" to Icons.Default.ReceiptLong,
+        "preparing" to Icons.Default.Restaurant,
+        "ready" to Icons.Default.TaskAlt,
+        "delivered" to Icons.Default.Home
+    )
+    val activeIndex = steps.indexOfFirst { it.first == status }.coerceAtLeast(0)
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            steps.forEachIndexed { index, step ->
+                val active = index <= activeIndex
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(7.dp)
+                        .background(if (active) CanadianRed else PotatoBeige.copy(alpha = 0.55f), RoundedCornerShape(8.dp))
+                )
+            }
+        }
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            steps.forEachIndexed { index, step ->
+                val active = index <= activeIndex
+                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
+                    Icon(step.second, contentDescription = null, tint = if (active) CanadianRed else Color.Gray, modifier = Modifier.size(16.dp))
+                    Text(step.first.replaceFirstChar { it.uppercase() }, color = if (active) PrimaryBlack else Color.Gray, fontSize = 9.sp, maxLines = 1)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun LegacyOrderStatusTimeline(status: String) {
     val steps = listOf("pending", "preparing", "ready", "delivered")
     val activeIndex = steps.indexOf(status).coerceAtLeast(0)
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {

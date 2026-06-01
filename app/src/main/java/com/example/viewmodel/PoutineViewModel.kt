@@ -112,6 +112,8 @@ data class AdminProduct(
     val category: String,
     val description: String,
     val price: Double,
+    val stock: Int = 25,
+    val available: Boolean = true,
     val imageUrl: String?
 )
 
@@ -119,6 +121,9 @@ data class AdminOrder(
     val id: Int,
     val customerName: String,
     val customerPhone: String,
+    val deliveryAddress: String,
+    val couponCode: String?,
+    val discount: Double,
     val total: Double,
     val status: String,
     val createdAt: String,
@@ -133,10 +138,22 @@ data class AdminOrderItem(
     val price: Double
 )
 
+data class Coupon(
+    val id: Int,
+    val code: String,
+    val description: String,
+    val discountType: String,
+    val discountValue: Double,
+    val active: Boolean,
+    val createdAt: String = "",
+    val discount: Double = 0.0
+)
+
 data class AdminUiState(
     val loading: Boolean = false,
     val savingHome: Boolean = false,
     val savingProduct: Boolean = false,
+    val savingCoupon: Boolean = false,
     val savingSettings: Boolean = false,
     val savingUserId: Int? = null,
     val savingOrderId: Int? = null
@@ -157,6 +174,9 @@ class PoutineViewModel : ViewModel() {
     private val _adminProducts = MutableStateFlow<List<AdminProduct>>(emptyList())
     private val _adminOrders = MutableStateFlow<List<AdminOrder>>(emptyList())
     private val _customerOrders = MutableStateFlow<List<AdminOrder>>(emptyList())
+    private val _adminCoupons = MutableStateFlow<List<Coupon>>(emptyList())
+    private val _appliedCoupon = MutableStateFlow<Coupon?>(null)
+    private val _couponMessage = MutableStateFlow<String?>(null)
     private val _adminMetrics = MutableStateFlow(AdminMetrics())
     private val _adminUiState = MutableStateFlow(AdminUiState())
     private val _homeSettings = MutableStateFlow(HomeSettings())
@@ -192,6 +212,9 @@ class PoutineViewModel : ViewModel() {
     val adminProducts: StateFlow<List<AdminProduct>> = _adminProducts
     val adminOrders: StateFlow<List<AdminOrder>> = _adminOrders
     val customerOrders: StateFlow<List<AdminOrder>> = _customerOrders
+    val adminCoupons: StateFlow<List<Coupon>> = _adminCoupons
+    val appliedCoupon: StateFlow<Coupon?> = _appliedCoupon
+    val couponMessage: StateFlow<String?> = _couponMessage
     val adminMetrics: StateFlow<AdminMetrics> = _adminMetrics
     val adminUiState: StateFlow<AdminUiState> = _adminUiState
     val homeSections: StateFlow<List<HomeSection>> = _homeSections
@@ -225,6 +248,7 @@ class PoutineViewModel : ViewModel() {
         } else {
             current + itemId
         }
+        syncFavoritesToBackend()
     }
 
     // Cart Interactions
@@ -288,20 +312,37 @@ class PoutineViewModel : ViewModel() {
             return if (sub == 0.0) 0.0 else if (sub >= 30.0) 0.0 else 4.99 // Free delivery over $30
         }
 
+    val couponDiscount: Double
+        get() {
+            val coupon = _appliedCoupon.value ?: return 0.0
+            val discount = if (coupon.discountType == "fixed") {
+                coupon.discountValue
+            } else {
+                cartSubtotal * (coupon.discountValue / 100.0)
+            }
+            return discount.coerceIn(0.0, cartSubtotal)
+        }
+
     val cartTotal: Double
-        get() = cartSubtotal + cartTax + cartDelivery
+        get() = (cartSubtotal + cartTax + cartDelivery - couponDiscount).coerceAtLeast(0.0)
 
     // Checkout Flow Simulation
-    fun checkout() {
+    fun checkout(deliveryAddress: String) {
         if (_cart.value.isEmpty()) {
             _checkoutState.value = CheckoutState.Error("Your shopping cart is empty")
             return
         }
+        if (deliveryAddress.trim().length < 8) {
+            _checkoutState.value = CheckoutState.Error("Add a valid delivery address")
+            return
+        }
         viewModelScope.launch {
             _checkoutState.value = CheckoutState.Processing
-            val orderId = createBackendOrder()
+            val orderId = createBackendOrder(deliveryAddress.trim())
             if (orderId != null) {
                 _cart.value = emptyList()
+                _appliedCoupon.value = null
+                _couponMessage.value = null
                 syncCartToBackend()
                 _checkoutState.value = CheckoutState.Success("POUT-$orderId")
                 _adminStats.value = fetchAdminStats()
@@ -311,6 +352,31 @@ class PoutineViewModel : ViewModel() {
                 _checkoutState.value = CheckoutState.Error("Could not place order")
             }
         }
+    }
+
+    fun applyCoupon(code: String) {
+        val cleanCode = code.trim()
+        if (cleanCode.isBlank()) {
+            _appliedCoupon.value = null
+            _couponMessage.value = "Enter a coupon code"
+            return
+        }
+        viewModelScope.launch {
+            _couponMessage.value = "Validating coupon..."
+            val coupon = validateCoupon(cleanCode)
+            if (coupon != null) {
+                _appliedCoupon.value = coupon
+                _couponMessage.value = "Coupon ${coupon.code} applied"
+            } else {
+                _appliedCoupon.value = null
+                _couponMessage.value = "Coupon is invalid or inactive"
+            }
+        }
+    }
+
+    fun clearCoupon() {
+        _appliedCoupon.value = null
+        _couponMessage.value = null
     }
 
     fun resetCheckout() {
@@ -398,6 +464,7 @@ class PoutineViewModel : ViewModel() {
             isLoadingRemoteCart = true
             _cart.value = remoteCart
             isLoadingRemoteCart = false
+            _favorites.value = fetchUserFavorites()
             _customerOrders.value = fetchCustomerOrders()
         }
     }
@@ -420,6 +487,7 @@ class PoutineViewModel : ViewModel() {
             _adminUsers.value = fetchAdminUsers()
             _adminProducts.value = fetchAdminProducts()
             _adminOrders.value = fetchAdminOrders()
+            _adminCoupons.value = fetchAdminCoupons()
             fetchHomeSettings()?.let { _homeSettings.value = it }
             _adminUiState.value = _adminUiState.value.copy(loading = false)
         }
@@ -450,6 +518,33 @@ class PoutineViewModel : ViewModel() {
             if (deleteBackendResource("/products/$productId")) {
                 _adminProducts.value = _adminProducts.value.filter { it.id != productId }
                 _adminStats.value = fetchAdminStats()
+            }
+        }
+    }
+
+    fun saveAdminCoupon(coupon: Coupon) {
+        if (coupon.code.isBlank() || coupon.discountValue <= 0) return
+
+        viewModelScope.launch {
+            _adminUiState.value = _adminUiState.value.copy(savingCoupon = true)
+            val saved = sendCoupon(coupon)
+            if (saved != null) {
+                _adminCoupons.value = if (coupon.id == 0) {
+                    listOf(saved) + _adminCoupons.value
+                } else {
+                    _adminCoupons.value.map { if (it.id == saved.id) saved else it }
+                }
+            }
+            _adminUiState.value = _adminUiState.value.copy(savingCoupon = false)
+        }
+    }
+
+    fun deleteAdminCoupon(couponId: Int) {
+        if (couponId <= 0) return
+
+        viewModelScope.launch {
+            if (deleteBackendResource("/coupons/$couponId")) {
+                _adminCoupons.value = _adminCoupons.value.filter { it.id != couponId }
             }
         }
     }
@@ -567,6 +662,9 @@ class PoutineViewModel : ViewModel() {
     fun logout() {
         _authState.value = AuthState.Idle
         _cart.value = emptyList()
+        _favorites.value = emptySet()
+        _appliedCoupon.value = null
+        _couponMessage.value = null
         _customerOrders.value = emptyList()
     }
 
@@ -695,13 +793,17 @@ class PoutineViewModel : ViewModel() {
         }
     }
 
-    private suspend fun createBackendOrder(): Int? {
+    private suspend fun createBackendOrder(deliveryAddress: String): Int? {
         return withContext(Dispatchers.IO) {
             try {
                 val user = (_authState.value as? AuthState.Authenticated)?.user
+                val coupon = _appliedCoupon.value
                 val payload = JSONObject()
                     .put("customer_name", user?.name ?: "Guest Customer")
                     .put("customer_phone", "N/A")
+                    .put("delivery_address", deliveryAddress)
+                    .put("coupon_code", coupon?.code ?: JSONObject.NULL)
+                    .put("discount", couponDiscount)
                     .put("total", cartTotal)
                     .put("status", "pending")
                     .put(
@@ -793,6 +895,19 @@ class PoutineViewModel : ViewModel() {
         }
     }
 
+    private suspend fun fetchAdminCoupons(): List<Coupon> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val connection = openJsonConnection("/coupons", "GET")
+                if (connection.responseCode !in 200..299) return@withContext emptyList()
+                val json = JSONArray(readResponse(connection))
+                (0 until json.length()).map { index -> parseCoupon(json.getJSONObject(index)) }
+            } catch (error: Exception) {
+                emptyList()
+            }
+        }
+    }
+
     private suspend fun fetchUserCart(): List<CartItem> {
         return withContext(Dispatchers.IO) {
             try {
@@ -807,6 +922,21 @@ class PoutineViewModel : ViewModel() {
                 }
             } catch (error: Exception) {
                 emptyList()
+            }
+        }
+    }
+
+    private suspend fun fetchUserFavorites(): Set<String> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val connection = openJsonConnection("/favorites", "GET")
+                if (connection.responseCode !in 200..299) return@withContext emptySet()
+                val json = JSONArray(readResponse(connection))
+                (0 until json.length()).mapNotNull { index ->
+                    json.getJSONObject(index).optString("item_key").takeIf { it.isNotBlank() }
+                }.toSet()
+            } catch (error: Exception) {
+                emptySet()
             }
         }
     }
@@ -845,6 +975,45 @@ class PoutineViewModel : ViewModel() {
         }
     }
 
+    private fun syncFavoritesToBackend() {
+        if ((_authState.value as? AuthState.Authenticated)?.user?.token.isNullOrBlank()) return
+
+        viewModelScope.launch {
+            saveUserFavorites()
+        }
+    }
+
+    private suspend fun saveUserFavorites(): Boolean {
+        return withContext(Dispatchers.IO) {
+            try {
+                val payload = JSONObject().put(
+                    "items",
+                    JSONArray(_favorites.value.map { JSONObject().put("item_key", it) })
+                )
+                val connection = openJsonConnection("/favorites", "PUT", doOutput = true)
+                connection.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
+                connection.responseCode in 200..299
+            } catch (error: Exception) {
+                false
+            }
+        }
+    }
+
+    private suspend fun validateCoupon(code: String): Coupon? {
+        return withContext(Dispatchers.IO) {
+            try {
+                val payload = JSONObject()
+                    .put("code", code)
+                    .put("subtotal", cartSubtotal)
+                val connection = openJsonConnection("/coupons/validate", "POST", doOutput = true)
+                connection.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
+                if (connection.responseCode in 200..299) parseCoupon(JSONObject(readResponse(connection))) else null
+            } catch (error: Exception) {
+                null
+            }
+        }
+    }
+
     private suspend fun sendProduct(product: AdminProduct): AdminProduct? {
         return withContext(Dispatchers.IO) {
             try {
@@ -855,6 +1024,8 @@ class PoutineViewModel : ViewModel() {
                     .put("category", product.category)
                     .put("description", product.description)
                     .put("price", product.price)
+                    .put("stock", product.stock)
+                    .put("available", product.available)
                     .put("image_url", product.imageUrl)
 
                 val connection = openJsonConnection(path, method, doOutput = true)
@@ -876,6 +1047,28 @@ class PoutineViewModel : ViewModel() {
                 val connection = openJsonConnection("/admin/users/$userId", "PUT", doOutput = true)
                 connection.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
                 if (connection.responseCode in 200..299) parseAdminUser(JSONObject(readResponse(connection))) else null
+            } catch (error: Exception) {
+                null
+            }
+        }
+    }
+
+    private suspend fun sendCoupon(coupon: Coupon): Coupon? {
+        return withContext(Dispatchers.IO) {
+            try {
+                val path = if (coupon.id == 0) "/coupons" else "/coupons/${coupon.id}"
+                val method = if (coupon.id == 0) "POST" else "PUT"
+                val payload = JSONObject()
+                    .put("code", coupon.code.trim().uppercase())
+                    .put("description", coupon.description)
+                    .put("discount_type", if (coupon.discountType == "fixed") "fixed" else "percent")
+                    .put("discount_value", coupon.discountValue)
+                    .put("active", coupon.active)
+
+                val connection = openJsonConnection(path, method, doOutput = true)
+                connection.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
+
+                if (connection.responseCode in 200..299) parseCoupon(JSONObject(readResponse(connection))) else null
             } catch (error: Exception) {
                 null
             }
@@ -1050,7 +1243,22 @@ class PoutineViewModel : ViewModel() {
             category = json.optString("category", "Poutine"),
             description = json.optString("description", ""),
             price = json.optDouble("price", 0.0),
+            stock = json.optInt("stock", 25),
+            available = json.optInt("available", 1) == 1,
             imageUrl = json.optString("image_url").ifBlank { null }
+        )
+    }
+
+    private fun parseCoupon(json: JSONObject): Coupon {
+        return Coupon(
+            id = json.optInt("id", 0),
+            code = json.optString("code", ""),
+            description = json.optString("description", ""),
+            discountType = json.optString("discount_type", "percent"),
+            discountValue = json.optDouble("discount_value", 0.0),
+            active = json.optInt("active", 1) == 1,
+            createdAt = json.optString("created_at", ""),
+            discount = json.optDouble("discount", 0.0)
         )
     }
 
@@ -1070,6 +1278,9 @@ class PoutineViewModel : ViewModel() {
             id = json.getInt("id"),
             customerName = json.optString("customer_name", ""),
             customerPhone = json.optString("customer_phone", ""),
+            deliveryAddress = json.optString("delivery_address", ""),
+            couponCode = json.optString("coupon_code").ifBlank { null },
+            discount = json.optDouble("discount", 0.0),
             total = json.optDouble("total", 0.0),
             status = json.optString("status", "pending"),
             createdAt = json.optString("created_at", ""),

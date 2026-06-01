@@ -275,10 +275,15 @@ async function initializeDatabase() {
       category VARCHAR(100) NOT NULL,
       description TEXT,
       price DECIMAL(10, 2) NOT NULL,
+      stock INT NOT NULL DEFAULT 25,
+      available TINYINT(1) NOT NULL DEFAULT 1,
       image_url VARCHAR(500),
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
   `);
+
+  await ensureColumn("products", "stock", "INT NOT NULL DEFAULT 25");
+  await ensureColumn("products", "available", "TINYINT(1) NOT NULL DEFAULT 1");
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS home_sections (
@@ -299,6 +304,9 @@ async function initializeDatabase() {
       user_id INT NULL,
       customer_name VARCHAR(255) NOT NULL,
       customer_phone VARCHAR(50) NOT NULL,
+      delivery_address TEXT,
+      coupon_code VARCHAR(80),
+      discount DECIMAL(10, 2) NOT NULL DEFAULT 0,
       total DECIMAL(10, 2) NOT NULL,
       status VARCHAR(50) NOT NULL DEFAULT 'pending',
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -307,6 +315,9 @@ async function initializeDatabase() {
   `);
 
   await ensureColumn("orders", "user_id", "INT NULL");
+  await ensureColumn("orders", "delivery_address", "TEXT");
+  await ensureColumn("orders", "coupon_code", "VARCHAR(80)");
+  await ensureColumn("orders", "discount", "DECIMAL(10, 2) NOT NULL DEFAULT 0");
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS order_items (
@@ -340,6 +351,29 @@ async function initializeDatabase() {
   `);
 
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS favorite_items (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      item_key VARCHAR(120) NOT NULL,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY unique_user_favorite (user_id, item_key),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS coupons (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      code VARCHAR(80) NOT NULL UNIQUE,
+      description VARCHAR(255),
+      discount_type VARCHAR(20) NOT NULL DEFAULT 'percent',
+      discount_value DECIMAL(10, 2) NOT NULL DEFAULT 0,
+      active TINYINT(1) NOT NULL DEFAULT 1,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS app_settings (
       setting_key VARCHAR(100) PRIMARY KEY,
       setting_value TEXT NOT NULL,
@@ -361,6 +395,12 @@ async function initializeDatabase() {
       ])]
     );
   }
+
+  await pool.query(
+    `INSERT IGNORE INTO coupons (code, description, discount_type, discount_value, active)
+     VALUES (?, ?, ?, ?, ?)`,
+    ["GRANNYLOVE", "Family recipe discount", "percent", 15, 1]
+  );
 
   const [[{ homeSectionCount }]] = await pool.query("SELECT COUNT(*) AS homeSectionCount FROM home_sections");
 
@@ -556,7 +596,7 @@ app.get("/products", async (req, res) => {
 
 app.put("/products/:id", requireAuth, requireAdmin, async (req, res) => {
   const { id } = req.params;
-  const { name, category, description, price, image_url } = req.body;
+  const { name, category, description, price, image_url, stock = 25, available = true } = req.body;
 
   if (!name || !category || price === undefined) {
     return res.status(400).json({ error: "name, category, and price are required" });
@@ -566,10 +606,10 @@ app.put("/products/:id", requireAuth, requireAdmin, async (req, res) => {
     const [result] = await pool.query(
       `
         UPDATE products
-        SET name = ?, category = ?, description = ?, price = ?, image_url = ?
+        SET name = ?, category = ?, description = ?, price = ?, stock = ?, available = ?, image_url = ?
         WHERE id = ?
       `,
-      [name, category, description || null, price, image_url || null, id]
+      [name, category, description || null, price, Math.max(0, Number(stock) || 0), available ? 1 : 0, image_url || null, id]
     );
 
     if (result.affectedRows === 0) {
@@ -676,7 +716,7 @@ app.delete("/home-sections/:id", requireAuth, requireAdmin, async (req, res) => 
 });
 
 app.post("/products", requireAuth, requireAdmin, async (req, res) => {
-  const { name, category, description, price, image_url } = req.body;
+  const { name, category, description, price, image_url, stock = 25, available = true } = req.body;
 
   if (!name || !category || price === undefined) {
     return res.status(400).json({ error: "name, category, and price are required" });
@@ -684,8 +724,8 @@ app.post("/products", requireAuth, requireAdmin, async (req, res) => {
 
   try {
     const [result] = await pool.query(
-      "INSERT INTO products (name, category, description, price, image_url) VALUES (?, ?, ?, ?, ?)",
-      [name, category, description || null, price, image_url || null]
+      "INSERT INTO products (name, category, description, price, stock, available, image_url) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      [name, category, description || null, price, Math.max(0, Number(stock) || 0), available ? 1 : 0, image_url || null]
     );
 
     const [[product]] = await pool.query("SELECT * FROM products WHERE id = ?", [result.insertId]);
@@ -979,12 +1019,159 @@ app.put("/cart", requireAuth, async (req, res) => {
   }
 });
 
+app.get("/favorites", requireAuth, async (req, res) => {
+  try {
+    const [items] = await pool.query(
+      "SELECT item_key, updated_at FROM favorite_items WHERE user_id = ? ORDER BY updated_at DESC",
+      [req.user.sub]
+    );
+    res.json(items);
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch favorites" });
+  }
+});
+
+app.put("/favorites", requireAuth, async (req, res) => {
+  const items = Array.isArray(req.body?.items) ? req.body.items : [];
+  const connection = await pool.getConnection();
+
+  try {
+    await connection.beginTransaction();
+    await connection.query("DELETE FROM favorite_items WHERE user_id = ?", [req.user.sub]);
+
+    const normalizedItems = [...new Set(items.map((item) => String(item.item_key || item)).filter(Boolean))]
+      .map((itemKey) => [req.user.sub, itemKey]);
+
+    if (normalizedItems.length > 0) {
+      await connection.query(
+        "INSERT INTO favorite_items (user_id, item_key) VALUES ?",
+        [normalizedItems]
+      );
+    }
+
+    await connection.commit();
+    res.json({ message: "Favorites saved", count: normalizedItems.length });
+  } catch (error) {
+    await connection.rollback();
+    res.status(500).json({ error: "Failed to save favorites" });
+  } finally {
+    connection.release();
+  }
+});
+
+app.post("/coupons/validate", async (req, res) => {
+  const code = String(req.body?.code || "").trim().toUpperCase();
+  const subtotal = Math.max(0, Number(req.body?.subtotal) || 0);
+
+  if (!code) {
+    return res.status(400).json({ error: "Coupon code is required" });
+  }
+
+  try {
+    const [[coupon]] = await pool.query(
+      "SELECT * FROM coupons WHERE code = ? AND active = 1",
+      [code]
+    );
+
+    if (!coupon) {
+      return res.status(404).json({ error: "Coupon not found or inactive" });
+    }
+
+    const value = Number(coupon.discount_value || 0);
+    const discount = coupon.discount_type === "fixed"
+      ? Math.min(subtotal, value)
+      : Math.min(subtotal, subtotal * (value / 100));
+
+    res.json({
+      ...coupon,
+      discount: Number(discount.toFixed(2))
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to validate coupon" });
+  }
+});
+
+app.get("/coupons", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const [coupons] = await pool.query("SELECT * FROM coupons ORDER BY created_at DESC, id DESC");
+    res.json(coupons);
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch coupons" });
+  }
+});
+
+app.post("/coupons", requireAuth, requireAdmin, async (req, res) => {
+  const { code, description, discount_type = "percent", discount_value, active = true } = req.body;
+  const normalizedCode = String(code || "").trim().toUpperCase();
+  const safeType = discount_type === "fixed" ? "fixed" : "percent";
+  const safeValue = Math.max(0, Number(discount_value) || 0);
+
+  if (!normalizedCode || safeValue <= 0) {
+    return res.status(400).json({ error: "code and discount_value are required" });
+  }
+
+  try {
+    const [result] = await pool.query(
+      "INSERT INTO coupons (code, description, discount_type, discount_value, active) VALUES (?, ?, ?, ?, ?)",
+      [normalizedCode, description || null, safeType, safeValue, active ? 1 : 0]
+    );
+    const [[coupon]] = await pool.query("SELECT * FROM coupons WHERE id = ?", [result.insertId]);
+    res.status(201).json(coupon);
+  } catch (error) {
+    res.status(500).json({ error: "Failed to create coupon" });
+  }
+});
+
+app.put("/coupons/:id", requireAuth, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { code, description, discount_type = "percent", discount_value, active = true } = req.body;
+  const normalizedCode = String(code || "").trim().toUpperCase();
+  const safeType = discount_type === "fixed" ? "fixed" : "percent";
+  const safeValue = Math.max(0, Number(discount_value) || 0);
+
+  if (!normalizedCode || safeValue <= 0) {
+    return res.status(400).json({ error: "code and discount_value are required" });
+  }
+
+  try {
+    const [result] = await pool.query(
+      "UPDATE coupons SET code = ?, description = ?, discount_type = ?, discount_value = ?, active = ? WHERE id = ?",
+      [normalizedCode, description || null, safeType, safeValue, active ? 1 : 0, id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "Coupon not found" });
+    }
+
+    const [[coupon]] = await pool.query("SELECT * FROM coupons WHERE id = ?", [id]);
+    res.json(coupon);
+  } catch (error) {
+    res.status(500).json({ error: "Failed to update coupon" });
+  }
+});
+
+app.delete("/coupons/:id", requireAuth, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const [result] = await pool.query("DELETE FROM coupons WHERE id = ?", [id]);
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: "Coupon not found" });
+    }
+
+    res.json({ message: "Coupon deleted successfully" });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to delete coupon" });
+  }
+});
+
 app.post("/orders", async (req, res) => {
   attachOptionalUser(req);
-  const { customer_name, customer_phone, total, status, items = [] } = req.body;
+  const { customer_name, customer_phone, delivery_address, coupon_code, discount = 0, total, status, items = [] } = req.body;
 
-  if (!customer_name || !customer_phone || total === undefined) {
-    return res.status(400).json({ error: "customer_name, customer_phone, and total are required" });
+  if (!customer_name || !customer_phone || !delivery_address || total === undefined) {
+    return res.status(400).json({ error: "customer_name, customer_phone, delivery_address, and total are required" });
   }
 
   const connection = await pool.getConnection();
@@ -993,8 +1180,8 @@ app.post("/orders", async (req, res) => {
     await connection.beginTransaction();
 
     const [orderResult] = await connection.query(
-      "INSERT INTO orders (user_id, customer_name, customer_phone, total, status) VALUES (?, ?, ?, ?, ?)",
-      [req.user?.sub || null, customer_name, customer_phone, total, status || "pending"]
+      "INSERT INTO orders (user_id, customer_name, customer_phone, delivery_address, coupon_code, discount, total, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      [req.user?.sub || null, customer_name, customer_phone, delivery_address, coupon_code || null, Number(discount) || 0, total, status || "pending"]
     );
 
     const normalizedItems = Array.isArray(items) ? items.filter((item) => item.quantity > 0) : [];
