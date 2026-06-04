@@ -30,7 +30,10 @@ data class FoodItem(
     val rating: Double = 4.8,
     val prepTime: String = "15-20 min",
     val ingredients: List<String> = emptyList(),
-    val tag: String? = null
+    val tag: String? = null,
+    val imageUrl: String? = null,
+    val stock: Int = 25,
+    val available: Boolean = true
 )
 
 object MenuData {

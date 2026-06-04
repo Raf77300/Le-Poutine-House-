@@ -197,6 +197,7 @@ class PoutineViewModel : ViewModel() {
 
     init {
         loadHomeSections()
+        refreshMenuProducts()
     }
 
     // Exposed Read-Only State Flows
@@ -297,6 +298,16 @@ class PoutineViewModel : ViewModel() {
 
     fun setSelectedCategory(category: PoutineCategory?) {
         _selectedCategory.value = category
+    }
+
+    fun refreshMenuProducts() {
+        viewModelScope.launch {
+            val products = fetchAdminProducts()
+            val visibleProducts = products.filter { it.available && it.stock > 0 }
+            if (visibleProducts.isNotEmpty()) {
+                _items.value = visibleProducts.map { it.toFoodItem() }
+            }
+        }
     }
 
     // Financial calculations
@@ -505,6 +516,7 @@ class PoutineViewModel : ViewModel() {
                 } else {
                     _adminProducts.value.map { if (it.id == saved.id) saved else it }
                 }
+                refreshMenuProducts()
                 _adminStats.value = fetchAdminStats()
             }
             _adminUiState.value = _adminUiState.value.copy(savingProduct = false)
@@ -517,6 +529,7 @@ class PoutineViewModel : ViewModel() {
         viewModelScope.launch {
             if (deleteBackendResource("/products/$productId")) {
                 _adminProducts.value = _adminProducts.value.filter { it.id != productId }
+                refreshMenuProducts()
                 _adminStats.value = fetchAdminStats()
             }
         }
@@ -917,7 +930,9 @@ class PoutineViewModel : ViewModel() {
                 (0 until json.length()).mapNotNull { index ->
                     val item = json.getJSONObject(index)
                     val key = item.optString("item_key")
-                    val foodItem = MenuData.items.firstOrNull { it.id == key } ?: return@mapNotNull null
+                    val foodItem = _items.value.firstOrNull { it.id == key }
+                        ?: MenuData.items.firstOrNull { it.id == key }
+                        ?: return@mapNotNull null
                     CartItem(foodItem = foodItem, quantity = item.optInt("quantity", 1).coerceAtLeast(1))
                 }
             } catch (error: Exception) {
@@ -1247,6 +1262,55 @@ class PoutineViewModel : ViewModel() {
             available = json.optInt("available", 1) == 1,
             imageUrl = json.optString("image_url").ifBlank { null }
         )
+    }
+
+    private fun AdminProduct.toFoodItem(): FoodItem {
+        val mappedCategory = category.toPoutineCategory()
+        return FoodItem(
+            id = "remote_$id",
+            name = name,
+            description = description.ifBlank { mappedCategory.description },
+            price = price,
+            category = mappedCategory,
+            isFeatured = category.contains("Abuelos", ignoreCase = true) || category.contains("Familia", ignoreCase = true),
+            rating = 4.8,
+            prepTime = "12-18 min",
+            ingredients = description.toIngredientHints(mappedCategory),
+            tag = if (stock <= 5) "Few left" else "House menu",
+            imageUrl = imageUrl?.takeUnless { it.contains("example.com", ignoreCase = true) },
+            stock = stock,
+            available = available
+        )
+    }
+
+    private fun String.toPoutineCategory(): PoutineCategory {
+        return when {
+            contains("Pap", ignoreCase = true) || contains("Mr.", ignoreCase = true) || contains("fuerte", ignoreCase = true) -> PoutineCategory.MR_POUTINE
+            contains("Mam", ignoreCase = true) || contains("Mrs.", ignoreCase = true) || contains("dulce", ignoreCase = true) -> PoutineCategory.MRS_POUTINE
+            contains("Ni", ignoreCase = true) || contains("Kids", ignoreCase = true) || contains("infantil", ignoreCase = true) -> PoutineCategory.KIDS
+            contains("Abuel", ignoreCase = true) || contains("Grand", ignoreCase = true) || contains("Entrada", ignoreCase = true) -> PoutineCategory.GRANDPA
+            contains("Familia", ignoreCase = true) || contains("Combo", ignoreCase = true) -> PoutineCategory.COMBOS
+            else -> PoutineCategory.MR_POUTINE
+        }
+    }
+
+    private fun String.toIngredientHints(category: PoutineCategory): List<String> {
+        val normalizedWords = split(",", ".", "-", " con ", " and ")
+            .map { it.trim() }
+            .filter { it.length in 4..34 }
+            .take(4)
+
+        return if (normalizedWords.isNotEmpty()) {
+            normalizedWords
+        } else {
+            when (category) {
+                PoutineCategory.MR_POUTINE -> listOf("Crispy fries", "Cheese curds", "Rich gravy", "Hearty topping")
+                PoutineCategory.MRS_POUTINE -> listOf("Golden fries", "Curds", "Gourmet sauce", "Sweet-salty touch")
+                PoutineCategory.KIDS -> listOf("Mini fries", "Mild gravy", "Small curds", "Kid-size serving")
+                PoutineCategory.GRANDPA, PoutineCategory.GRANDMA -> listOf("House fries", "Traditional gravy", "Curds", "Family recipe")
+                PoutineCategory.COMBOS -> listOf("Large poutine", "Sides", "Family portion", "House gravy")
+            }
+        }
     }
 
     private fun parseCoupon(json: JSONObject): Coupon {

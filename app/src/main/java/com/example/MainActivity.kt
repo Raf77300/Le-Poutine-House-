@@ -602,6 +602,22 @@ val ProductFamilyCategories = listOf(
     )
 )
 
+fun PoutineCategory.menuTabLabel(): String = when (this) {
+    PoutineCategory.MR_POUTINE -> "Papá"
+    PoutineCategory.MRS_POUTINE -> "Mamá"
+    PoutineCategory.KIDS -> "Niños"
+    PoutineCategory.GRANDPA, PoutineCategory.GRANDMA -> "Abuelos"
+    PoutineCategory.COMBOS -> "Familia"
+}
+
+fun PoutineCategory.menuFamilyDescription(): String = when (this) {
+    PoutineCategory.MR_POUTINE -> "Platos fuertes de la casa: poutines grandes, carnes, bacon y recetas con carácter."
+    PoutineCategory.MRS_POUTINE -> "Poutines suaves, gourmet y dulce/saladas pensadas con el toque de Mamá."
+    PoutineCategory.KIDS -> "Menú infantil con porciones pequeñas, gravy suave y sabores divertidos."
+    PoutineCategory.GRANDPA, PoutineCategory.GRANDMA -> "Entradas, clásicos tradicionales y recetas de los abuelos con gravy de familia."
+    PoutineCategory.COMBOS -> "Combos para compartir entre todos: packs familiares, sides y favoritos de la casa."
+}
+
 @Composable
 fun DrawableImageByName(
     resourceName: String,
@@ -1906,9 +1922,10 @@ fun ProductDetailsScreen(
                     .fillMaxWidth()
                     .height(240.dp)
             ) {
-                Image(
-                    painter = painterResource(id = R.drawable.img_poutine_hero),
-                    contentDescription = null,
+                DrawableImageByName(
+                    resourceName = product.imageUrl ?: "img_poutine_hero",
+                    fallbackResId = R.drawable.img_poutine_hero,
+                    contentDescription = product.name,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop
                 )
@@ -2017,6 +2034,27 @@ fun ProductDetailsScreen(
                     Text(text = "⏱️ ${product.prepTime}", color = Color.Gray, fontSize = 13.sp)
                 }
 
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = if (product.stock > 5) Color(0xFFE8F5E9) else GoldenPotato.copy(alpha = 0.16f)),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.padding(bottom = 14.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        val stockColor = if (product.stock > 5) Color(0xFF2E7D32) else CanadianRed
+                        Icon(Icons.Default.Inventory, contentDescription = null, tint = stockColor, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = if (product.available && product.stock > 0) "${product.stock} available today" else "Sold out today",
+                            color = stockColor,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp
+                        )
+                    }
+                }
+
                 Divider(color = PotatoBeige.copy(alpha = 0.2f), thickness = 1.dp)
 
                 // Description
@@ -2111,6 +2149,7 @@ fun ProductDetailsScreen(
                         Toast.makeText(context, "${product.name} x$quantity added to cart!", Toast.LENGTH_SHORT).show()
                         onDismiss()
                     },
+                    enabled = product.available && product.stock > 0,
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(56.dp)
@@ -2123,7 +2162,7 @@ fun ProductDetailsScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(text = "Add to Cart", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.White)
+                        Text(text = if (product.available && product.stock > 0) "Add to Cart" else "Sold Out", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.White)
                         Text(
                             text = String.format("$%.2f", totalCost),
                             fontWeight = FontWeight.Black,
@@ -2150,6 +2189,13 @@ fun MenuScreen(
     val selectedCategory by viewModel.selectedCategory.collectAsState()
 
     var showOnlyFavorites by remember { mutableStateOf(false) }
+    val visibleFamilyTabs = listOf(
+        PoutineCategory.MR_POUTINE,
+        PoutineCategory.MRS_POUTINE,
+        PoutineCategory.KIDS,
+        PoutineCategory.GRANDPA,
+        PoutineCategory.COMBOS
+    )
 
     Column(
         modifier = Modifier
@@ -2246,14 +2292,14 @@ fun MenuScreen(
                 )
 
                 // Specific families
-                PoutineCategory.values().forEach { cat ->
+                visibleFamilyTabs.forEach { cat ->
                     FilterChip(
                         selected = selectedCategory == cat && !showOnlyFavorites,
                         onClick = {
                             viewModel.setSelectedCategory(cat)
                             showOnlyFavorites = false
                         },
-                        label = { Text("${cat.emoji} ${cat.characterRole}") },
+                        label = { Text(cat.menuTabLabel(), fontWeight = FontWeight.Bold) },
                         colors = FilterChipDefaults.filterChipColors(
                             selectedContainerColor = PrimaryBlack,
                             selectedLabelColor = Color.White,
@@ -2272,6 +2318,10 @@ fun MenuScreen(
             }
 
             Spacer(modifier = Modifier.height(14.dp))
+
+            val categoryDescriptionTitle = selectedCategory?.menuTabLabel() ?: "Toda la familia"
+            val categoryDescriptionText = selectedCategory?.menuFamilyDescription()
+                ?: "Explora las recetas de Papá, Mamá, Niños, Abuelos y los combos Familia. Todo se actualiza desde el dashboard."
 
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -2294,13 +2344,13 @@ fun MenuScreen(
                     Spacer(modifier = Modifier.width(12.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Toda la familia",
+                            text = categoryDescriptionTitle,
                             color = Color.White,
                             fontWeight = FontWeight.Black,
                             fontSize = 15.sp
                         )
                         Text(
-                            text = "Toca Ver mas para conocer a cada personaje y sus recetas.",
+                            text = categoryDescriptionText,
                             color = Color.White.copy(alpha = 0.72f),
                             fontSize = 11.sp,
                             lineHeight = 14.sp
@@ -2401,9 +2451,10 @@ fun MenuProductCard(
                     .fillMaxWidth()
                     .height(130.dp)
             ) {
-                Image(
-                    painter = painterResource(id = R.drawable.img_poutine_hero),
-                    contentDescription = null,
+                DrawableImageByName(
+                    resourceName = item.imageUrl ?: "img_poutine_hero",
+                    fallbackResId = R.drawable.img_poutine_hero,
+                    contentDescription = item.name,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop
                 )
@@ -2496,6 +2547,14 @@ fun MenuProductCard(
                     modifier = Modifier.padding(vertical = 10.dp)
                 )
 
+                Text(
+                    text = if (item.available && item.stock > 0) "Available today: ${item.stock}" else "Sold out today",
+                    color = if (item.available && item.stock > 0) Color(0xFF2E7D32) else CanadianRed,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -2513,6 +2572,7 @@ fun MenuProductCard(
                             onQuickAdd()
                             Toast.makeText(context, "Added ${item.name} to Cart!", Toast.LENGTH_SHORT).show()
                         },
+                        enabled = item.available && item.stock > 0,
                         modifier = Modifier.height(34.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = PrimaryBlack),
                         shape = RoundedCornerShape(17.dp),
@@ -2520,7 +2580,7 @@ fun MenuProductCard(
                     ) {
                         Icon(Icons.Default.Add, contentDescription = "Quick add", tint = Color.White, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Add", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = Color.White)
+                        Text(if (item.available && item.stock > 0) "Add" else "Out", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = Color.White)
                     }
                 }
             }
