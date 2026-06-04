@@ -3273,39 +3273,84 @@ fun ImageUploadField(
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = CreamBackground),
-        border = BorderStroke(1.dp, PotatoBeige.copy(alpha = 0.45f)),
-        shape = RoundedCornerShape(18.dp)
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        border = BorderStroke(1.dp, GoldenPotato.copy(alpha = 0.35f)),
+        shape = RoundedCornerShape(22.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
         Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Image, contentDescription = null, tint = GoldenPotato)
-                Spacer(modifier = Modifier.width(8.dp))
+                Box(
+                    modifier = Modifier
+                        .size(38.dp)
+                        .background(GoldenPotato.copy(alpha = 0.15f), RoundedCornerShape(12.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(Icons.Default.Image, contentDescription = null, tint = GoldenPotato, modifier = Modifier.size(21.dp))
+                }
+                Spacer(modifier = Modifier.width(10.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(label, color = PrimaryBlack, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     Text(
-                        text = if (value.isBlank()) "PNG, JPG, JPEG or WEBP only" else value,
+                        text = if (value.isBlank()) "PNG, JPG, JPEG or WEBP. Optimized to 1200px / max 2MB." else "Ready: ${value.substringAfterLast("/")}",
                         color = Color.Gray,
                         fontSize = 11.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
+                if (isUploading) {
+                    CircularProgressIndicator(color = CanadianRed, strokeWidth = 2.dp, modifier = Modifier.size(20.dp))
+                }
             }
             if (value.isNotBlank()) {
-                DrawableImageByName(
-                    resourceName = value,
-                    fallbackResId = R.drawable.img_poutine_family_logo,
-                    contentDescription = "$label preview",
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(112.dp)
-                        .clip(RoundedCornerShape(16.dp)),
-                    contentScale = ContentScale.Crop
-                )
+                        .height(138.dp)
+                        .clip(RoundedCornerShape(18.dp))
+                ) {
+                    DrawableImageByName(
+                        resourceName = value,
+                        fallbackResId = R.drawable.img_poutine_family_logo,
+                        contentDescription = "$label preview",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                    Card(
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(10.dp),
+                        colors = CardDefaults.cardColors(containerColor = PrimaryBlack.copy(alpha = 0.86f)),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.AutoFixHigh, contentDescription = null, tint = GoldenPotato, modifier = Modifier.size(13.dp))
+                            Spacer(modifier = Modifier.width(5.dp))
+                            Text("Optimized", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(96.dp)
+                        .background(CreamBackground, RoundedCornerShape(18.dp))
+                        .border(BorderStroke(1.dp, PotatoBeige.copy(alpha = 0.35f)), RoundedCornerShape(18.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(Icons.Default.AddPhotoAlternate, contentDescription = null, tint = GoldenPotato, modifier = Modifier.size(28.dp))
+                        Text("Preview appears here", color = Color.Gray, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
@@ -3316,11 +3361,7 @@ fun ImageUploadField(
                     shape = RoundedCornerShape(16.dp)
                 ) {
                     if (isUploading) {
-                        CircularProgressIndicator(
-                            color = Color.White,
-                            strokeWidth = 2.dp,
-                            modifier = Modifier.size(18.dp)
-                        )
+                        Text("Optimizing...", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                     } else {
                         Icon(Icons.Default.Upload, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(6.dp))

@@ -1,6 +1,8 @@
 package com.example.viewmodel
 
 import android.content.ContentResolver
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -8,6 +10,7 @@ import com.example.model.FoodItem
 import com.example.model.MenuData
 import com.example.model.PoutineCategory
 import java.io.BufferedReader
+import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
@@ -1123,12 +1126,10 @@ class PoutineViewModel : ViewModel() {
                     return@withContext null to "Only PNG, JPG, JPEG, and WEBP images are allowed."
                 }
 
-                val extension = when (mimeType) {
-                    "image/png" -> "png"
-                    "image/jpeg", "image/jpg" -> "jpg"
-                    "image/webp" -> "webp"
-                    else -> "img"
-                }
+                val compressedImage = compressImageForUpload(contentResolver, uri, mimeType)
+                    ?: return@withContext null to "Could not optimize selected image."
+                val uploadMimeType = if (mimeType == "image/webp") "image/webp" else "image/jpeg"
+                val extension = if (uploadMimeType == "image/webp") "webp" else "jpg"
                 val boundary = "----LePoutineHouse${System.currentTimeMillis()}"
                 val lineEnd = "\r\n"
                 val connection = (URL("$API_BASE_URL/uploads").openConnection() as HttpURLConnection).apply {
@@ -1140,24 +1141,14 @@ class PoutineViewModel : ViewModel() {
                     setRequestProperty("Accept", "application/json")
                 }
 
-                val imageInput = contentResolver.openInputStream(uri)
-                    ?: return@withContext null to "Could not read selected image."
-
                 DataOutputStream(connection.outputStream).use { output ->
                     output.writeBytes("--$boundary$lineEnd")
                     output.writeBytes(
                         "Content-Disposition: form-data; name=\"image\"; filename=\"upload.$extension\"$lineEnd"
                     )
-                    output.writeBytes("Content-Type: $mimeType$lineEnd")
+                    output.writeBytes("Content-Type: $uploadMimeType$lineEnd")
                     output.writeBytes(lineEnd)
-                    imageInput.use { input ->
-                        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                        while (true) {
-                            val read = input.read(buffer)
-                            if (read == -1) break
-                            output.write(buffer, 0, read)
-                        }
-                    }
+                    output.write(compressedImage)
                     output.writeBytes(lineEnd)
                     output.writeBytes("--$boundary--$lineEnd")
                     output.flush()
@@ -1173,6 +1164,47 @@ class PoutineViewModel : ViewModel() {
                 null to "Image upload failed."
             }
         }
+    }
+
+    private fun compressImageForUpload(contentResolver: ContentResolver, uri: Uri, mimeType: String): ByteArray? {
+        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options) }
+
+        if (options.outWidth <= 0 || options.outHeight <= 0) return null
+
+        val maxDimension = 1200
+        var sampleSize = 1
+        while ((options.outWidth / sampleSize) > maxDimension || (options.outHeight / sampleSize) > maxDimension) {
+            sampleSize *= 2
+        }
+
+        val decodeOptions = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+        val decoded = contentResolver.openInputStream(uri)?.use {
+            BitmapFactory.decodeStream(it, null, decodeOptions)
+        } ?: return null
+
+        val scale = minOf(
+            maxDimension.toFloat() / decoded.width.toFloat(),
+            maxDimension.toFloat() / decoded.height.toFloat(),
+            1f
+        )
+        val outputBitmap = if (scale < 1f) {
+            Bitmap.createScaledBitmap(
+                decoded,
+                (decoded.width * scale).toInt().coerceAtLeast(1),
+                (decoded.height * scale).toInt().coerceAtLeast(1),
+                true
+            )
+        } else {
+            decoded
+        }
+
+        val format = if (mimeType == "image/webp") Bitmap.CompressFormat.WEBP else Bitmap.CompressFormat.JPEG
+        val output = ByteArrayOutputStream()
+        outputBitmap.compress(format, 82, output)
+        if (outputBitmap != decoded) outputBitmap.recycle()
+        decoded.recycle()
+        return output.toByteArray()
     }
 
     private suspend fun updateBackendOrderStatus(orderId: Int, status: String): AdminOrder? {

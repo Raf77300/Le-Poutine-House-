@@ -33,7 +33,7 @@ const imageStorage = multer.diskStorage({
 const upload = multer({
   storage: imageStorage,
   limits: {
-    fileSize: 5 * 1024 * 1024
+    fileSize: 2 * 1024 * 1024
   },
   fileFilter: (req, file, cb) => {
     if (!allowedImageTypes.has(file.mimetype)) {
@@ -443,6 +443,9 @@ app.get("/", (req, res) => {
 app.post("/uploads", (req, res) => {
   upload.single("image")(req, res, (error) => {
     if (error) {
+      if (error.code === "LIMIT_FILE_SIZE") {
+        return res.status(400).json({ error: "Image is too large. Please upload an optimized image under 2MB." });
+      }
       return res.status(400).json({ error: error.message });
     }
 
