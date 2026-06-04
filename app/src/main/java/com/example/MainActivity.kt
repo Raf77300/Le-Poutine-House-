@@ -568,6 +568,40 @@ data class FamilyStoryVisual(
     val imageName: String
 )
 
+data class ProductFamilyCategory(
+    val value: String,
+    val label: String,
+    val description: String
+)
+
+val ProductFamilyCategories = listOf(
+    ProductFamilyCategory(
+        value = "Papá - Platos fuertes",
+        label = "Papá - Platos fuertes",
+        description = "Poutines grandes, carnes, brisket, bacon y recetas contundentes."
+    ),
+    ProductFamilyCategory(
+        value = "Mamá - Poutines suaves y dulces",
+        label = "Mamá - Suaves y dulces",
+        description = "Poutines creativas, gourmet, toque dulce/salado y postres inspirados en poutine."
+    ),
+    ProductFamilyCategory(
+        value = "Niños - Menú infantil",
+        label = "Niños - Menú infantil",
+        description = "Porciones pequeñas, sabores suaves y combos para los Little Spuds."
+    ),
+    ProductFamilyCategory(
+        value = "Abuelos - Entradas tradicionales",
+        label = "Abuelos - Entradas",
+        description = "Entradas, clásicos de casa, recetas tradicionales y gravy de la familia."
+    ),
+    ProductFamilyCategory(
+        value = "Familia - Combos",
+        label = "Familia - Combos",
+        description = "Combos para compartir, packs familiares y ofertas de la casa."
+    )
+)
+
 @Composable
 fun DrawableImageByName(
     resourceName: String,
@@ -727,6 +761,70 @@ fun AuthTextField(
         ),
         shape = RoundedCornerShape(16.dp)
     )
+}
+
+@Composable
+fun ProductCategoryDropdown(
+    selectedValue: String,
+    onSelected: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val selected = ProductFamilyCategories.firstOrNull { it.value == selectedValue }
+        ?: ProductFamilyCategories.first()
+
+    Box(modifier = modifier.fillMaxWidth()) {
+        OutlinedTextField(
+            value = selected.label,
+            onValueChange = {},
+            readOnly = true,
+            label = { Text("Category") },
+            leadingIcon = { Icon(Icons.Default.Category, contentDescription = null, tint = GoldenPotato) },
+            trailingIcon = {
+                IconButton(onClick = { expanded = true }) {
+                    Icon(
+                        imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                        contentDescription = "Open categories",
+                        tint = PrimaryBlack
+                    )
+                }
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { expanded = true },
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = GoldenPotato,
+                unfocusedBorderColor = PotatoBeige.copy(alpha = 0.5f),
+                focusedLabelColor = GoldenPotato,
+                cursorColor = CanadianRed,
+                focusedTextColor = PrimaryBlack,
+                unfocusedTextColor = PrimaryBlack
+            ),
+            shape = RoundedCornerShape(16.dp)
+        )
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            modifier = Modifier
+                .fillMaxWidth(0.82f)
+                .background(Color.White)
+        ) {
+            ProductFamilyCategories.forEach { option ->
+                DropdownMenuItem(
+                    text = {
+                        Column {
+                            Text(option.label, color = PrimaryBlack, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text(option.description, color = Color.Gray, fontSize = 11.sp, lineHeight = 14.sp)
+                        }
+                    },
+                    onClick = {
+                        onSelected(option.value)
+                        expanded = false
+                    }
+                )
+            }
+        }
+    }
 }
 
 // 1. Splash Screen
@@ -3265,7 +3363,7 @@ fun AdminDashboardScreen(
     var active by remember { mutableStateOf(true) }
     var editingSection by remember { mutableStateOf<HomeSection?>(null) }
     var productName by remember { mutableStateOf("") }
-    var productCategory by remember { mutableStateOf("Poutine") }
+    var productCategory by remember { mutableStateOf(ProductFamilyCategories.first().value) }
     var productDescription by remember { mutableStateOf("") }
     var productPrice by remember { mutableStateOf("") }
     var productStock by remember { mutableStateOf("25") }
@@ -3404,7 +3502,7 @@ fun AdminDashboardScreen(
 
     fun resetProductForm() {
         productName = ""
-        productCategory = "Poutine"
+        productCategory = ProductFamilyCategories.first().value
         productDescription = ""
         productPrice = ""
         productStock = "25"
@@ -3888,11 +3986,9 @@ fun AdminDashboardScreen(
                         label = "Product name",
                         leadingIcon = { Icon(Icons.Default.Fastfood, contentDescription = null, tint = GoldenPotato) }
                     )
-                    AuthTextField(
-                        value = productCategory,
-                        onValueChange = { productCategory = it },
-                        label = "Category",
-                        leadingIcon = { Icon(Icons.Default.Category, contentDescription = null, tint = GoldenPotato) }
+                    ProductCategoryDropdown(
+                        selectedValue = productCategory,
+                        onSelected = { productCategory = it }
                     )
                     AuthTextField(
                         value = productPrice,
