@@ -62,59 +62,59 @@ let pool;
 const sampleProducts = [
   {
     name: "Classic Poutine",
-    category: "Poutine",
+    category: "Papá",
     description: "Crispy fries, cheese curds, and rich brown gravy.",
     price: 8.99,
-    image_url: "https://example.com/images/classic-poutine.jpg"
+    image_url: null
   },
   {
     name: "Bacon Poutine",
-    category: "Poutine",
+    category: "Papá",
     description: "Classic poutine topped with smoky bacon pieces.",
     price: 10.99,
-    image_url: "https://example.com/images/bacon-poutine.jpg"
+    image_url: null
   },
   {
     name: "Chicken Poutine",
-    category: "Poutine",
+    category: "Mamá",
     description: "Tender chicken over fries, cheese curds, and gravy.",
     price: 11.99,
-    image_url: "https://example.com/images/chicken-poutine.jpg"
+    image_url: null
   },
   {
     name: "Double Cheese Poutine",
-    category: "Poutine",
+    category: "Mamá",
     description: "Extra cheese curds with creamy cheese sauce and gravy.",
     price: 10.49,
-    image_url: "https://example.com/images/double-cheese-poutine.jpg"
+    image_url: null
   },
   {
     name: "Family Combo",
-    category: "Combo",
+    category: "Familia",
     description: "Large poutine, sides, and drinks for the whole family.",
     price: 27.99,
-    image_url: "https://example.com/images/family-combo.jpg"
+    image_url: null
   },
   {
     name: "Kids Poutine",
-    category: "Kids",
+    category: "Niños",
     description: "A smaller serving of the classic favorite.",
     price: 5.99,
-    image_url: "https://example.com/images/kids-poutine.jpg"
+    image_url: null
   },
   {
     name: "Grandpa Traditional Feast",
-    category: "Special",
+    category: "Abuelos",
     description: "A hearty traditional plate with classic poutine flavors.",
     price: 14.99,
-    image_url: "https://example.com/images/grandpa-traditional-feast.jpg"
+    image_url: null
   },
   {
     name: "Grandma Homemade Special",
-    category: "Special",
+    category: "Abuelos",
     description: "Homestyle poutine with a comforting house gravy.",
     price: 13.99,
-    image_url: "https://example.com/images/grandma-homemade-special.jpg"
+    image_url: null
   }
 ];
 
