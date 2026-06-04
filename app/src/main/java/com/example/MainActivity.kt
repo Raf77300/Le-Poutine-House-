@@ -2451,19 +2451,41 @@ fun MenuProductCard(
                     .fillMaxWidth()
                     .height(130.dp)
             ) {
-                DrawableImageByName(
-                    resourceName = item.imageUrl ?: "img_poutine_hero",
-                    fallbackResId = R.drawable.img_poutine_hero,
-                    contentDescription = item.name,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop
-                )
-                // Color layer
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(Color.Black.copy(alpha = 0.15f))
-                )
+                if (item.imageUrl != null) {
+                    DrawableImageByName(
+                        resourceName = item.imageUrl,
+                        fallbackResId = R.drawable.img_poutine_hero,
+                        contentDescription = item.name,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.15f))
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(
+                                Brush.linearGradient(
+                                    colors = listOf(
+                                        GoldenPotato.copy(alpha = 0.22f),
+                                        CreamBackground,
+                                        Color(item.category.colorHex).copy(alpha = 0.20f)
+                                    )
+                                )
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        PotatoCharacterAvatar(
+                            category = item.category,
+                            modifier = Modifier.size(76.dp),
+                            backgroundColor = Color.White.copy(alpha = 0.78f)
+                        )
+                    }
+                }
 
                 // Top absolute pills inside cover
                 Row(
