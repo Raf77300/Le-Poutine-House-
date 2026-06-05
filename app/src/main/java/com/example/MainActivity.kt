@@ -1,12 +1,12 @@
 package com.example
 
-import android.content.Intent
+
 import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
-import androidx.activity.result.contract.ActivityResultContracts
+
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -80,6 +80,10 @@ import com.example.viewmodel.HomeSection
 import com.example.viewmodel.PoutineViewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import android.content.Intent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import com.example.PaymentActivity
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -630,7 +634,7 @@ fun DrawableImageByName(
     val remoteUrl = remember(resourceName) {
         when {
             resourceName.startsWith("http://") || resourceName.startsWith("https://") -> resourceName
-            resourceName.startsWith("/uploads/") -> "http://10.0.2.2:3000$resourceName"
+            resourceName.startsWith("/uploads/") -> "http://192.168.3.140:3000$resourceName"
             else -> null
         }
     }
@@ -3042,7 +3046,31 @@ fun CartScreen(
 
         // Place Order button
         item {
-            Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp)) {
+            var isPayPalProcessing by remember { mutableStateOf(false) }
+            
+            val payPalLauncher = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.StartActivityForResult()
+            ) { result ->
+                isPayPalProcessing = false
+                if (result.resultCode == android.app.Activity.RESULT_OK) {
+                    val orderId = result.data?.getStringExtra("order_id")
+                    viewModel.capturePayPalOrder(orderId ?: "") { success ->
+                        if (success) {
+                            Toast.makeText(context, "¡Pago completado!", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                } else if (result.resultCode == android.app.Activity.RESULT_CANCELED) {
+                    Toast.makeText(context, "Pago cancelado", Toast.LENGTH_SHORT).show()
+                }
+            }
+            
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                // Botón de pago normal (efectivo/tarjeta en persona)
                 Button(
                     onClick = {
                         if (deliveryAddress.trim().length < 8) {
@@ -3059,11 +3087,55 @@ fun CartScreen(
                     shape = RoundedCornerShape(27.dp)
                 ) {
                     Text(
-                        text = "Place Order & Pay",
+                        text = "Pagar en efectivo / tarjeta",
                         fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp,
+                        fontSize = 14.sp,
                         color = Color.White
                     )
+                }
+                
+                // Botón de PayPal
+                Button(
+                    onClick = {
+                        if (deliveryAddress.trim().length < 8) {
+                            Toast.makeText(context, "Add a valid delivery address", Toast.LENGTH_SHORT).show()
+                        } else {
+                            isPayPalProcessing = true
+                            viewModel.createPayPalOrder(viewModel.cartTotal) { paypalUrl ->
+                                isPayPalProcessing = false
+                                if (paypalUrl != null) {
+                                    val intent = Intent(context, PaymentActivity::class.java).apply {
+                                        putExtra("paypal_url", paypalUrl)
+                                        putExtra("order_id", viewModel.currentPayPalOrderId.value)
+                                    }
+                                    payPalLauncher.launch(intent)
+                                } else {
+                                    Toast.makeText(context, "Error al crear orden PayPal", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        }
+                    },
+                    enabled = !isPayPalProcessing,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(54.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0070BA)),
+                    shape = RoundedCornerShape(27.dp)
+                ) {
+                    if (isPayPalProcessing) {
+                        CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.size(20.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Procesando...", color = Color.White, fontWeight = FontWeight.Bold)
+                    } else {
+                        Icon(
+                            imageVector = Icons.Default.Payment,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp),
+                            tint = Color.White
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Pagar con PayPal", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    }
                 }
             }
         }
@@ -4612,7 +4684,7 @@ fun AdminDashboardScreen(
                 ) {
                     Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         Text("Settings", color = PrimaryBlack, fontWeight = FontWeight.Black, fontSize = 18.sp)
-                        Text("Backend URL: http://10.0.2.2:3000", color = Color.Gray, fontSize = 12.sp)
+                        Text("Backend URL: http://192.168.3.140:3000", color = Color.Gray, fontSize = 12.sp)
                         Text("Allowed image formats: PNG, JPG, JPEG, WEBP.", color = Color.Gray, fontSize = 12.sp)
                         Text("New users this week: ${stats.newUsers7d}", color = PrimaryBlack, fontWeight = FontWeight.Bold)
                         Text("Active users: ${stats.activeUsers}", color = PrimaryBlack, fontWeight = FontWeight.Bold)
@@ -5147,3 +5219,4 @@ fun ContactScreen() {
         }
     }
 }
+

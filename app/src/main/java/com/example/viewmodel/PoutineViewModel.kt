@@ -198,6 +198,10 @@ class PoutineViewModel : ViewModel() {
     )
     private var isLoadingRemoteCart = false
 
+    // PayPal properties
+    private val _currentPayPalOrderId = MutableStateFlow("")
+    val currentPayPalOrderId: StateFlow<String> = _currentPayPalOrderId
+
     init {
         loadHomeSections()
         refreshMenuProducts()
@@ -232,8 +236,8 @@ class PoutineViewModel : ViewModel() {
     ) { allItems, query, category ->
         allItems.filter { item ->
             val matchesCategory = category == null || item.category == category
-            val matchesQuery = query.isEmpty() || 
-                    item.name.contains(query, ignoreCase = true) || 
+            val matchesQuery = query.isEmpty() ||
+                    item.name.contains(query, ignoreCase = true) ||
                     item.description.contains(query, ignoreCase = true) ||
                     item.category.title.contains(query, ignoreCase = true)
             matchesCategory && matchesQuery
@@ -318,12 +322,12 @@ class PoutineViewModel : ViewModel() {
         get() = _cart.value.sumOf { it.foodItem.price * it.quantity }
 
     val cartTax: Double
-        get() = cartSubtotal * 0.15 // 15% Canadian Sales Tax (QST/GST average)
+        get() = cartSubtotal * 0.15
 
     val cartDelivery: Double
         get() {
             val sub = cartSubtotal
-            return if (sub == 0.0) 0.0 else if (sub >= 30.0) 0.0 else 4.99 // Free delivery over $30
+            return if (sub == 0.0) 0.0 else if (sub >= 30.0) 0.0 else 4.99
         }
 
     val couponDiscount: Double
@@ -340,7 +344,7 @@ class PoutineViewModel : ViewModel() {
     val cartTotal: Double
         get() = (cartSubtotal + cartTax + cartDelivery - couponDiscount).coerceAtLeast(0.0)
 
-    // Checkout Flow Simulation
+    // Checkout
     fun checkout(deliveryAddress: String) {
         if (_cart.value.isEmpty()) {
             _checkoutState.value = CheckoutState.Error("Your shopping cart is empty")
@@ -364,6 +368,72 @@ class PoutineViewModel : ViewModel() {
                 _customerOrders.value = fetchCustomerOrders()
             } else {
                 _checkoutState.value = CheckoutState.Error("Could not place order")
+            }
+        }
+    }
+
+    // PayPal functions
+    fun createPayPalOrder(total: Double, onResult: (String?) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val response = withContext(Dispatchers.IO) {
+                    val payload = JSONObject().put("total", total)
+                    val connection = openJsonConnection("/paypal/create-order", "POST", doOutput = true)
+                    connection.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
+
+                    if (connection.responseCode in 200..299) {
+                        JSONObject(readResponse(connection))
+                    } else {
+                        null
+                    }
+                }
+
+                if (response != null) {
+                    val approveLink = response.optString("approve_link")
+                    val orderId = response.optString("id")
+
+                    if (approveLink.isNotBlank()) {
+                        _currentPayPalOrderId.value = orderId
+                        onResult(approveLink)
+                    } else {
+                        onResult(null)
+                    }
+                } else {
+                    onResult(null)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                onResult(null)
+            }
+        }
+    }
+
+    fun capturePayPalOrder(orderId: String, onComplete: (Boolean) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val response = withContext(Dispatchers.IO) {
+                    val payload = JSONObject().put("orderId", orderId)
+                    val connection = openJsonConnection("/paypal/capture-order", "POST", doOutput = true)
+                    connection.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
+
+                    if (connection.responseCode in 200..299) {
+                        val json = JSONObject(readResponse(connection))
+                        json.optString("status")
+                    } else {
+                        null
+                    }
+                }
+
+                if (response == "COMPLETED") {
+                    _checkoutState.value = CheckoutState.Success("POUT-$orderId")
+                    clearCart()
+                    onComplete(true)
+                } else {
+                    onComplete(false)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                onComplete(false)
             }
         }
     }
@@ -696,6 +766,7 @@ class PoutineViewModel : ViewModel() {
         }
     }
 
+    // Private helper methods
     private suspend fun authenticate(endpoint: String, payload: JSONObject): AuthState {
         return withContext(Dispatchers.IO) {
             try {
@@ -1260,7 +1331,6 @@ class PoutineViewModel : ViewModel() {
         return withContext(Dispatchers.IO) {
             try {
                 val connection = openJsonConnection("/home-sections/$sectionId", "DELETE")
-
                 connection.responseCode in 200..299
             } catch (error: Exception) {
                 false
@@ -1455,7 +1525,7 @@ class PoutineViewModel : ViewModel() {
     }
 
     companion object {
-        private const val API_BASE_URL = "http://10.0.2.2:3000"
+        private const val API_BASE_URL = "http://192.168.3.140:3000"
         private const val API_TIMEOUT_MS = 3000
     }
 }

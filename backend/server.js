@@ -6,6 +6,13 @@ const crypto = require("crypto");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
+const paypal = require('@paypal/checkout-server-sdk')
+const environment = new paypal.core.SandboxEnvironment(
+  "AehSuO11_WNaUg7ESAZSwU5-jENx_VDa7amCK4L5PtCim2CIqOx3T8O6FRISB5D6FtxbSWFf77g-KSXS",
+  "EBOe2sv4z64pnoSBMpNfvKtKXkEbO-q3i8RaTPFf3FIk9q9cFrooIFYus2l2av4n2qo466_QN_h02Qzs"
+)
+
+const paypalClient = new paypal.core.PayPalHttpClient(environment)
 
 const app = express();
 const uploadDir = path.join(__dirname, "uploads");
@@ -1241,3 +1248,141 @@ initializeDatabase()
     console.error("Failed to initialize database", error);
     process.exit(1);
   });
+
+
+
+  app.post('/paypal/capture-order', async (req, res) => {
+    try {
+        const { orderId } = req.body;
+
+        const request = new paypal.orders.OrdersCaptureRequest(orderId);
+
+        request.requestBody({});
+
+        const capture = await client.execute(request);
+
+        res.json(capture.result);
+
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({
+            error: 'PayPal capture failed'
+        });
+    }
+});
+
+// ============ PAYPAL ENDPOINTS (SOLO UNA VEZ CADA UNO) ============
+
+app.post('/paypal/create-order', async (req, res) => {
+  try {
+      const { total } = req.body;
+
+      if (!total || total <= 0) {
+          return res.status(400).json({ error: "Valid total amount is required" });
+      }
+
+      const request = new paypal.orders.OrdersCreateRequest();
+      
+      request.prefer("return=representation");
+      
+      request.requestBody({
+          intent: "CAPTURE",
+          purchase_units: [
+              {
+                  amount: {
+                      currency_code: "USD",
+                      value: total.toFixed(2)
+                  },
+                  description: "Le Poutine House Order"
+              }
+          ],
+          application_context: {
+              brand_name: "Le Poutine House",
+              landing_page: "LOGIN",
+              user_action: "PAY_NOW",
+              return_url: "lepoutinehouse://payment/success",
+              cancel_url: "lepoutinehouse://payment/cancel"
+          }
+      });
+
+      const order = await paypalClient.execute(request);
+      
+      const approveLink = order.result.links.find(link => link.rel === "approve");
+      
+      res.json({
+          id: order.result.id,
+          approve_link: approveLink ? approveLink.href : null,
+          status: order.result.status
+      });
+
+  } catch (error) {
+      console.error("PayPal create order error:", error);
+      res.status(500).json({ 
+          error: "Failed to create PayPal order",
+          details: error.message 
+      });
+  }
+});
+
+app.post('/paypal/capture-order', async (req, res) => {
+  try {
+      const { orderId } = req.body;
+
+      if (!orderId) {
+          return res.status(400).json({ error: "Order ID is required" });
+      }
+
+      const request = new paypal.orders.OrdersCaptureRequest(orderId);
+      request.requestBody({});
+
+      const capture = await paypalClient.execute(request);  // ✅ usa paypalClient, NO client
+
+      res.json({
+          id: capture.result.id,
+          status: capture.result.status,
+          purchase_units: capture.result.purchase_units
+      });
+
+  } catch (error) {
+      console.error("PayPal capture error:", error);
+      res.status(500).json({ 
+          error: "Failed to capture PayPal order",
+          details: error.message 
+      });
+  }
+});
+
+// Endpoint para verificar estado de orden (opcional)
+app.get('/paypal/order-status/:orderId', async (req, res) => {
+  try {
+      const { orderId } = req.params;
+      
+      const request = new paypal.orders.OrdersGetRequest(orderId);
+      const order = await paypalClient.execute(request);
+      
+      res.json({
+          id: order.result.id,
+          status: order.result.status,
+          amount: order.result.purchase_units[0].amount.value
+      });
+  } catch (error) {
+      res.status(500).json({ error: "Failed to get order status" });
+  }
+});
+// Endpoint para verificar estado de orden (opcional)
+app.get('/paypal/order-status/:orderId', async (req, res) => {
+  try {
+      const { orderId } = req.params;
+      
+      const request = new paypal.orders.OrdersGetRequest(orderId);
+      const order = await paypalClient.execute(request);
+      
+      res.json({
+          id: order.result.id,
+          status: order.result.status,
+          amount: order.result.purchase_units[0].amount.value
+      });
+  } catch (error) {
+      res.status(500).json({ error: "Failed to get order status" });
+  }
+});

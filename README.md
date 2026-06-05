@@ -62,7 +62,7 @@ or:
 Use this URL from the Android emulator:
 
 ```text
-http://10.0.2.2:3000
+http://192.168.3.140:3000
 ```
 
 Use your computer's local network IP for a physical phone on the same Wi-Fi network. Example:
