@@ -276,7 +276,6 @@ fun AuthScreen(
     var name by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
-    var registerAsAdmin by remember { mutableStateOf(false) }
     var showPassword by remember { mutableStateOf(false) }
     var alert by remember { mutableStateOf<SweetAlertInfo?>(null) }
 
@@ -451,7 +450,7 @@ fun AuthScreen(
                                         type = SweetAlertType.Warning
                                     )
                                 } else if (isRegisterMode) {
-                                    viewModel.register(name.trim(), email.trim(), password, registerAsAdmin)
+                                    viewModel.register(name.trim(), email.trim(), password)
                                 } else {
                                     viewModel.login(email.trim(), password)
                                 }
@@ -491,41 +490,6 @@ fun AuthScreen(
                                 color = PrimaryBlack,
                                 fontWeight = FontWeight.Bold
                             )
-                        }
-
-                        if (isRegisterMode) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(16.dp))
-                                    .clickable { registerAsAdmin = !registerAsAdmin }
-                                    .background(CreamBackground)
-                                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Checkbox(
-                                    checked = registerAsAdmin,
-                                    onCheckedChange = { registerAsAdmin = it },
-                                    colors = CheckboxDefaults.colors(
-                                        checkedColor = CanadianRed,
-                                        uncheckedColor = Color.Gray
-                                    )
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Column {
-                                    Text(
-                                        text = "Register as administrator",
-                                        color = PrimaryBlack,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 13.sp
-                                    )
-                                    Text(
-                                        text = "Admins can add content to the home page.",
-                                        color = Color.Gray,
-                                        fontSize = 11.sp
-                                    )
-                                }
-                            }
                         }
 
                         TextButton(

@@ -6,13 +6,7 @@ const crypto = require("crypto");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
-const paypal = require('@paypal/checkout-server-sdk')
-const environment = new paypal.core.SandboxEnvironment(
-  "AehSuO11_WNaUg7ESAZSwU5-jENx_VDa7amCK4L5PtCim2CIqOx3T8O6FRISB5D6FtxbSWFf77g-KSXS",
-  "EBOe2sv4z64pnoSBMpNfvKtKXkEbO-q3i8RaTPFf3FIk9q9cFrooIFYus2l2av4n2qo466_QN_h02Qzs"
-)
-
-const paypalClient = new paypal.core.PayPalHttpClient(environment)
+const paypal = require("@paypal/checkout-server-sdk");
 
 const app = express();
 const uploadDir = path.join(__dirname, "uploads");
@@ -22,7 +16,20 @@ if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
 
-app.use(cors());
+const corsOrigins = String(process.env.CORS_ORIGINS || "")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || corsOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    return callback(new Error("Not allowed by CORS"));
+  }
+}));
 app.use(express.json());
 app.use("/uploads", express.static(uploadDir));
 
@@ -63,8 +70,25 @@ const dbConfig = {
 };
 
 const port = Number(process.env.PORT || 3000);
-const jwtSecret = process.env.JWT_SECRET || "le-poutine-house-dev-secret";
+const jwtSecret = process.env.JWT_SECRET;
 let pool;
+
+if (!jwtSecret) {
+  console.error("JWT_SECRET environment variable is required");
+  process.exit(1);
+}
+
+function createPayPalClient() {
+  const clientId = process.env.PAYPAL_CLIENT_ID;
+  const secret = process.env.PAYPAL_SECRET;
+
+  if (!clientId || !secret) {
+    return null;
+  }
+
+  const environment = new paypal.core.SandboxEnvironment(clientId, secret);
+  return new paypal.core.PayPalHttpClient(environment);
+}
 
 const sampleProducts = [
   {
@@ -433,13 +457,20 @@ async function initializeDatabase() {
     )
   );
 
-  const [[adminUser]] = await pool.query("SELECT id FROM users WHERE email = ?", ["admin@poutine.local"]);
-  if (!adminUser) {
-    const adminHash = await bcrypt.hash("12345", 10);
-    await pool.query(
-      "INSERT INTO users (name, email, password_hash, role, active) VALUES (?, ?, ?, ?, ?)",
-      ["Admin", "admin@poutine.local", adminHash, "admin", 1]
-    );
+  const adminEmail = process.env.ADMIN_EMAIL;
+  const adminPassword = process.env.ADMIN_PASSWORD;
+
+  if (adminEmail && adminPassword) {
+    const [[adminUser]] = await pool.query("SELECT id FROM users WHERE email = ?", [adminEmail]);
+    if (!adminUser) {
+      const adminHash = await bcrypt.hash(adminPassword, 10);
+      await pool.query(
+        "INSERT INTO users (name, email, password_hash, role, active) VALUES (?, ?, ?, ?, ?)",
+        ["Admin", adminEmail, adminHash, "admin", 1]
+      );
+    }
+  } else {
+    console.warn("ADMIN_EMAIL and ADMIN_PASSWORD are not set; default admin user was not created");
   }
 }
 
@@ -447,7 +478,7 @@ app.get("/", (req, res) => {
   res.json({ message: "Le Poutine House API is running" });
 });
 
-app.post("/uploads", (req, res) => {
+app.post("/uploads", requireAuth, requireAdmin, (req, res) => {
   upload.single("image")(req, res, (error) => {
     if (error) {
       if (error.code === "LIMIT_FILE_SIZE") {
@@ -517,7 +548,7 @@ app.put("/settings/home", requireAuth, requireAdmin, async (req, res) => {
 });
 
 app.post("/auth/register", async (req, res) => {
-  const { name, email, password, role } = req.body;
+  const { name, email, password } = req.body;
 
   if (!name || !email || !password) {
     return res.status(400).json({ error: "name, email, and password are required" });
@@ -535,7 +566,7 @@ app.post("/auth/register", async (req, res) => {
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
-    const userRole = role === "admin" ? "admin" : "customer";
+    const userRole = "customer";
     const [result] = await pool.query(
       "INSERT INTO users (name, email, password_hash, role) VALUES (?, ?, ?, ?)",
       [name, email, passwordHash, userRole]
@@ -1178,10 +1209,24 @@ app.delete("/coupons/:id", requireAuth, requireAdmin, async (req, res) => {
 
 app.post("/orders", async (req, res) => {
   attachOptionalUser(req);
-  const { customer_name, customer_phone, delivery_address, coupon_code, discount = 0, total, status, items = [] } = req.body;
+  const { customer_name, customer_phone, delivery_address, coupon_code, items = [] } = req.body;
 
-  if (!customer_name || !customer_phone || !delivery_address || total === undefined) {
-    return res.status(400).json({ error: "customer_name, customer_phone, delivery_address, and total are required" });
+  if (!customer_name || !customer_phone || !delivery_address) {
+    return res.status(400).json({ error: "customer_name, customer_phone, and delivery_address are required" });
+  }
+
+  const requestedItems = Array.isArray(items)
+    ? items
+        .map((item) => ({
+          product_id: Number(item.product_id) || null,
+          product_name: String(item.product_name || item.name || "").trim(),
+          quantity: Math.max(0, Math.floor(Number(item.quantity) || 0))
+        }))
+        .filter((item) => item.quantity > 0 && (item.product_id || item.product_name))
+    : [];
+
+  if (requestedItems.length === 0) {
+    return res.status(400).json({ error: "At least one valid order item is required" });
   }
 
   const connection = await pool.getConnection();
@@ -1189,27 +1234,88 @@ app.post("/orders", async (req, res) => {
   try {
     await connection.beginTransaction();
 
+    const orderItems = [];
+
+    for (const item of requestedItems) {
+      const [[product]] = item.product_id
+        ? await connection.query(
+            "SELECT id, name, price, stock, available FROM products WHERE id = ?",
+            [item.product_id]
+          )
+        : await connection.query(
+            "SELECT id, name, price, stock, available FROM products WHERE name = ? ORDER BY id ASC LIMIT 1",
+            [item.product_name]
+          );
+
+      if (!product || Number(product.available) !== 1) {
+        await connection.rollback();
+        return res.status(400).json({ error: `Product is not available: ${item.product_name || item.product_id}` });
+      }
+
+      if (Number(product.stock) < item.quantity) {
+        await connection.rollback();
+        return res.status(400).json({ error: `Not enough stock for ${product.name}` });
+      }
+
+      const [stockResult] = await connection.query(
+        "UPDATE products SET stock = stock - ? WHERE id = ? AND stock >= ?",
+        [item.quantity, product.id, item.quantity]
+      );
+
+      if (stockResult.affectedRows === 0) {
+        await connection.rollback();
+        return res.status(400).json({ error: `Not enough stock for ${product.name}` });
+      }
+
+      const unitPrice = Number(product.price) || 0;
+      orderItems.push([
+        null,
+        product.id,
+        product.name,
+        item.quantity,
+        unitPrice
+      ]);
+    }
+
+    const subtotal = orderItems.reduce((sum, item) => sum + (Number(item[4]) * Number(item[3])), 0);
+    const tax = subtotal * 0.15;
+    const delivery = subtotal === 0 ? 0 : subtotal >= 30 ? 0 : 4.99;
+    let discount = 0;
+    let appliedCouponCode = null;
+    const normalizedCouponCode = String(coupon_code || "").trim().toUpperCase();
+
+    if (normalizedCouponCode) {
+      const [[coupon]] = await connection.query(
+        "SELECT code, discount_type, discount_value FROM coupons WHERE code = ? AND active = 1",
+        [normalizedCouponCode]
+      );
+
+      if (!coupon) {
+        await connection.rollback();
+        return res.status(400).json({ error: "Coupon not found or inactive" });
+      }
+
+      const value = Number(coupon.discount_value || 0);
+      discount = coupon.discount_type === "fixed"
+        ? Math.min(subtotal, value)
+        : Math.min(subtotal, subtotal * (value / 100));
+      appliedCouponCode = coupon.code;
+    }
+
+    const safeDiscount = Number(discount.toFixed(2));
+    const total = Number(Math.max(0, subtotal + tax + delivery - safeDiscount).toFixed(2));
+
     const [orderResult] = await connection.query(
       "INSERT INTO orders (user_id, customer_name, customer_phone, delivery_address, coupon_code, discount, total, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-      [req.user?.sub || null, customer_name, customer_phone, delivery_address, coupon_code || null, Number(discount) || 0, total, status || "pending"]
+      [req.user?.sub || null, customer_name, customer_phone, delivery_address, appliedCouponCode, safeDiscount, total, "pending"]
     );
 
-    const normalizedItems = Array.isArray(items) ? items.filter((item) => item.quantity > 0) : [];
+    const insertItems = orderItems.map((item) => [orderResult.insertId, item[1], item[2], item[3], item[4]]);
 
-    if (normalizedItems.length > 0) {
-      const orderItems = normalizedItems.map((item) => [
-        orderResult.insertId,
-        item.product_id || null,
-        item.product_name || item.name || "Menu item",
-        Number(item.quantity) || 1,
-        Number(item.price) || 0
-      ]);
-
-      await connection.query(
-        "INSERT INTO order_items (order_id, product_id, product_name, quantity, price) VALUES ?",
-        [orderItems]
-      );
-    }
+    await connection.query(
+      "INSERT INTO order_items (order_id, product_id, product_name, quantity, price) VALUES ?",
+      [insertItems]
+    );
 
     await connection.commit();
 
@@ -1238,6 +1344,109 @@ app.get("/health", async (req, res) => {
   }
 });
 
+app.post("/paypal/create-order", async (req, res) => {
+  try {
+    const paypalClient = createPayPalClient();
+    if (!paypalClient) {
+      return res.status(503).json({ error: "PayPal is not configured" });
+    }
+
+    const total = Number(req.body?.total);
+    if (!total || total <= 0) {
+      return res.status(400).json({ error: "Valid total amount is required" });
+    }
+
+    const request = new paypal.orders.OrdersCreateRequest();
+    request.prefer("return=representation");
+    request.requestBody({
+      intent: "CAPTURE",
+      purchase_units: [
+        {
+          amount: {
+            currency_code: "USD",
+            value: total.toFixed(2)
+          },
+          description: "Le Poutine House Order"
+        }
+      ],
+      application_context: {
+        brand_name: "Le Poutine House",
+        landing_page: "LOGIN",
+        user_action: "PAY_NOW",
+        return_url: "lepoutinehouse://payment/success",
+        cancel_url: "lepoutinehouse://payment/cancel"
+      }
+    });
+
+    const order = await paypalClient.execute(request);
+    const approveLink = order.result.links.find((link) => link.rel === "approve");
+
+    res.json({
+      id: order.result.id,
+      approve_link: approveLink ? approveLink.href : null,
+      status: order.result.status
+    });
+  } catch (error) {
+    console.error("PayPal create order error:", error);
+    res.status(500).json({
+      error: "Failed to create PayPal order",
+      details: error.message
+    });
+  }
+});
+
+app.post("/paypal/capture-order", async (req, res) => {
+  try {
+    const paypalClient = createPayPalClient();
+    if (!paypalClient) {
+      return res.status(503).json({ error: "PayPal is not configured" });
+    }
+
+    const { orderId } = req.body;
+    if (!orderId) {
+      return res.status(400).json({ error: "Order ID is required" });
+    }
+
+    const request = new paypal.orders.OrdersCaptureRequest(orderId);
+    request.requestBody({});
+
+    const capture = await paypalClient.execute(request);
+
+    res.json({
+      id: capture.result.id,
+      status: capture.result.status,
+      purchase_units: capture.result.purchase_units
+    });
+  } catch (error) {
+    console.error("PayPal capture error:", error);
+    res.status(500).json({
+      error: "Failed to capture PayPal order",
+      details: error.message
+    });
+  }
+});
+
+app.get("/paypal/order-status/:orderId", async (req, res) => {
+  try {
+    const paypalClient = createPayPalClient();
+    if (!paypalClient) {
+      return res.status(503).json({ error: "PayPal is not configured" });
+    }
+
+    const { orderId } = req.params;
+    const request = new paypal.orders.OrdersGetRequest(orderId);
+    const order = await paypalClient.execute(request);
+
+    res.json({
+      id: order.result.id,
+      status: order.result.status,
+      amount: order.result.purchase_units[0].amount.value
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to get order status" });
+  }
+});
+
 initializeDatabase()
   .then(() => {
     app.listen(port, () => {
@@ -1248,141 +1457,3 @@ initializeDatabase()
     console.error("Failed to initialize database", error);
     process.exit(1);
   });
-
-
-
-  app.post('/paypal/capture-order', async (req, res) => {
-    try {
-        const { orderId } = req.body;
-
-        const request = new paypal.orders.OrdersCaptureRequest(orderId);
-
-        request.requestBody({});
-
-        const capture = await client.execute(request);
-
-        res.json(capture.result);
-
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({
-            error: 'PayPal capture failed'
-        });
-    }
-});
-
-// ============ PAYPAL ENDPOINTS (SOLO UNA VEZ CADA UNO) ============
-
-app.post('/paypal/create-order', async (req, res) => {
-  try {
-      const { total } = req.body;
-
-      if (!total || total <= 0) {
-          return res.status(400).json({ error: "Valid total amount is required" });
-      }
-
-      const request = new paypal.orders.OrdersCreateRequest();
-      
-      request.prefer("return=representation");
-      
-      request.requestBody({
-          intent: "CAPTURE",
-          purchase_units: [
-              {
-                  amount: {
-                      currency_code: "USD",
-                      value: total.toFixed(2)
-                  },
-                  description: "Le Poutine House Order"
-              }
-          ],
-          application_context: {
-              brand_name: "Le Poutine House",
-              landing_page: "LOGIN",
-              user_action: "PAY_NOW",
-              return_url: "lepoutinehouse://payment/success",
-              cancel_url: "lepoutinehouse://payment/cancel"
-          }
-      });
-
-      const order = await paypalClient.execute(request);
-      
-      const approveLink = order.result.links.find(link => link.rel === "approve");
-      
-      res.json({
-          id: order.result.id,
-          approve_link: approveLink ? approveLink.href : null,
-          status: order.result.status
-      });
-
-  } catch (error) {
-      console.error("PayPal create order error:", error);
-      res.status(500).json({ 
-          error: "Failed to create PayPal order",
-          details: error.message 
-      });
-  }
-});
-
-app.post('/paypal/capture-order', async (req, res) => {
-  try {
-      const { orderId } = req.body;
-
-      if (!orderId) {
-          return res.status(400).json({ error: "Order ID is required" });
-      }
-
-      const request = new paypal.orders.OrdersCaptureRequest(orderId);
-      request.requestBody({});
-
-      const capture = await paypalClient.execute(request);  // ✅ usa paypalClient, NO client
-
-      res.json({
-          id: capture.result.id,
-          status: capture.result.status,
-          purchase_units: capture.result.purchase_units
-      });
-
-  } catch (error) {
-      console.error("PayPal capture error:", error);
-      res.status(500).json({ 
-          error: "Failed to capture PayPal order",
-          details: error.message 
-      });
-  }
-});
-
-// Endpoint para verificar estado de orden (opcional)
-app.get('/paypal/order-status/:orderId', async (req, res) => {
-  try {
-      const { orderId } = req.params;
-      
-      const request = new paypal.orders.OrdersGetRequest(orderId);
-      const order = await paypalClient.execute(request);
-      
-      res.json({
-          id: order.result.id,
-          status: order.result.status,
-          amount: order.result.purchase_units[0].amount.value
-      });
-  } catch (error) {
-      res.status(500).json({ error: "Failed to get order status" });
-  }
-});
-// Endpoint para verificar estado de orden (opcional)
-app.get('/paypal/order-status/:orderId', async (req, res) => {
-  try {
-      const { orderId } = req.params;
-      
-      const request = new paypal.orders.OrdersGetRequest(orderId);
-      const order = await paypalClient.execute(request);
-      
-      res.json({
-          id: order.result.id,
-          status: order.result.status,
-          amount: order.result.purchase_units[0].amount.value
-      });
-  } catch (error) {
-      res.status(500).json({ error: "Failed to get order status" });
-  }
-});

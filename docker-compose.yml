@@ -33,6 +33,12 @@ services:
       DB_NAME: le_poutine_house
       DB_PORT: 3306
       PORT: 3000
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      JWT_SECRET: change_this_to_a_long_random_secret
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      PAYPAL_CLIENT_ID: ${PAYPAL_CLIENT_ID:-}
+      PAYPAL_SECRET: ${PAYPAL_SECRET:-}
     ports:
       - "3000:3000"
     volumes:

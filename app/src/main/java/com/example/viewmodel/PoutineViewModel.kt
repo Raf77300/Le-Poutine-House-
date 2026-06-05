@@ -473,34 +473,6 @@ class PoutineViewModel : ViewModel() {
             return
         }
 
-        if (email.trim().equals("admin@poutine.local", ignoreCase = true) && password == "12345") {
-            viewModelScope.launch {
-                _authState.value = AuthState.Loading
-                val backendState = authenticate(
-                    endpoint = "login",
-                    payload = JSONObject()
-                        .put("email", email.trim())
-                        .put("password", password)
-                )
-                _authState.value = if (backendState is AuthState.Authenticated) {
-                    backendState
-                } else {
-                    AuthState.Authenticated(
-                        AuthUser(
-                            id = 1,
-                            name = "Admin",
-                            email = "admin@poutine.local",
-                            role = "admin"
-                        )
-                    )
-                }
-                if ((_authState.value as? AuthState.Authenticated)?.user?.token?.isNotBlank() == true) {
-                    loadUserCartAndOrders()
-                }
-            }
-            return
-        }
-
         viewModelScope.launch {
             _authState.value = AuthState.Loading
             _authState.value = authenticate(
@@ -515,7 +487,7 @@ class PoutineViewModel : ViewModel() {
         }
     }
 
-    fun register(name: String, email: String, password: String, asAdmin: Boolean = false) {
+    fun register(name: String, email: String, password: String) {
         if (name.isBlank() || email.isBlank() || password.isBlank()) {
             _authState.value = AuthState.Error("Name, email, and password are required")
             return
@@ -534,7 +506,6 @@ class PoutineViewModel : ViewModel() {
                     .put("name", name.trim())
                     .put("email", email.trim())
                     .put("password", password)
-                    .put("role", if (asAdmin) "admin" else "customer")
             )
             if (_authState.value is AuthState.Authenticated) {
                 loadUserCartAndOrders()
@@ -890,18 +861,17 @@ class PoutineViewModel : ViewModel() {
                     .put("customer_phone", "N/A")
                     .put("delivery_address", deliveryAddress)
                     .put("coupon_code", coupon?.code ?: JSONObject.NULL)
-                    .put("discount", couponDiscount)
-                    .put("total", cartTotal)
-                    .put("status", "pending")
                     .put(
                         "items",
                         JSONArray(
                             _cart.value.map { cartItem ->
+                                val remoteProductId = cartItem.foodItem.id
+                                    .removePrefix("remote_")
+                                    .toIntOrNull()
                                 JSONObject()
-                                    .put("product_id", JSONObject.NULL)
+                                    .put("product_id", remoteProductId ?: JSONObject.NULL)
                                     .put("product_name", cartItem.foodItem.name)
                                     .put("quantity", cartItem.quantity)
-                                    .put("price", cartItem.foodItem.price)
                             }
                         )
                     )
