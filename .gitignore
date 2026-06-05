@@ -1,4 +1,6 @@
 *.iml
+node_modules/
+backend/node_modules/
 .gradle
 .kotlin
 /local.properties
